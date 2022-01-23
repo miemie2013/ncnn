@@ -1,0 +1,84 @@
+
+
+vulkan:
+wget https://sdk.lunarg.com/sdk/download/1.2.189.0/linux/vulkansdk-linux-x86_64-1.2.189.0.tar.gz?Human=true -O vulkansdk-linux-x86_64-1.2.189.0.tar.gz
+tar -xf vulkansdk-linux-x86_64-1.2.189.0.tar.gz
+
+
+sudo gedit ~/.bashrc
+
+
+export PYTHON_HOME=~/anaconda3
+export CUDA_HOME=/usr/local/cuda-10.2
+export PATH=${PYTHON_HOME}/bin:${CUDA_HOME}/bin:$PATH
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${CUDA_HOME}/lib64
+export TENSORRT_HOME=~/TensorRT-8.0.1.6
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${TENSORRT_HOME}/lib
+export PYTHON_EXECUTABLE=~/anaconda3/bin
+export VULKAN_SDK=~/1.2.189.0/x86_64
+
+
+source ~/.bashrc
+
+
+输入命令
+vulkaninfo
+
+
+或者
+vulkaninfo | grep deviceType
+
+
+打印出信息，表示安装成功。
+
+
+ncnn安装教程
+https://blog.csdn.net/weixin_43541325/article/details/117412417
+
+
+
+
+跑示例：
+cd build
+cmake -DCMAKE_BUILD_TYPE=Release -DNCNN_VULKAN=ON -DNCNN_SYSTEM_GLSLANG=ON -DNCNN_BUILD_EXAMPLES=ON ..
+make -j$(nproc)
+
+cd ../examples
+../build/examples/squeezenet ../images/256-ncnn.png
+
+
+
+cd examples
+../build/examples/squeezenet ../images/000000000019.jpg
+
+
+../build/examples/squeezenet ../images/dog.jpg
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
