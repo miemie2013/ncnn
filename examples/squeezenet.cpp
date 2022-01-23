@@ -24,6 +24,24 @@
 #include <stdio.h>
 #include <vector>
 
+void pretty_print(const ncnn::Mat& m)
+{
+    for (int q=0; q<m.c; q++)
+    {
+        const float* ptr = m.channel(q);
+        for (int y=0; y<m.h; y++)
+        {
+            for (int x=0; x<m.w; x++)
+            {
+                printf("%f ", ptr[x]);
+            }
+            ptr += m.w;
+            printf("\n");
+        }
+        printf("------------------------\n");
+    }
+}
+
 static int detect_squeezenet(const cv::Mat& bgr, std::vector<float>& cls_scores)
 {
     ncnn::Net squeezenet;
@@ -35,6 +53,7 @@ static int detect_squeezenet(const cv::Mat& bgr, std::vector<float>& cls_scores)
     squeezenet.load_model("squeezenet_v1.1.bin");
 
     ncnn::Mat in = ncnn::Mat::from_pixels_resize(bgr.data, ncnn::Mat::PIXEL_BGR, bgr.cols, bgr.rows, 227, 227);
+    pretty_print(in);
 
     const float mean_vals[3] = {104.f, 117.f, 123.f};
     in.substract_mean_normalize(mean_vals, 0);
