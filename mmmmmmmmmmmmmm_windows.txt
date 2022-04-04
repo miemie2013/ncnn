@@ -1,0 +1,101 @@
+原文连接：
+https://github.com/Tencent/ncnn/wiki/how-to-build#build-for-windows-x64-using-visual-studio-community-2017
+
+
+(1)
+安装vs2017，https://visualstudio.microsoft.com/zh-hans/vs/older-downloads/#visual-studio-2017-and-other-products
+需要登录后下载，建议下载Community社区版。在安装时需要在工作负荷一栏中勾选 使用C++的桌面开发 和 通用Windows平台开发，
+并在语言包一栏中选择 英语。
+
+
+
+(2)
+解压protobuf-3.4.0.zip到D://下，
+桌面左下角点放大镜，搜索x64 Native Tools Command Prompt for VS 2017，右键以管理员身份运行
+
+输入以下命令编译安装protobuf-3.4.0，
+(注意，本压缩包protobuf-3.4.0.zip已经编译安装过，如果想重新编译安装，删除build文件夹再运行以下命令)
+
+d:
+cd D://protobuf-3.4.0
+mkdir build
+cd build
+cmake -G"NMake Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=%cd%/install -Dprotobuf_BUILD_TESTS=OFF -Dprotobuf_MSVC_STATIC_RUNTIME=OFF ../cmake
+nmake
+nmake install
+
+
+(3)
+解压opencv.zip到D://下，
+
+
+(4)
+解压MinGW (gcc9.2.0-2) 只安装了gnu 四个编译器.rar到D://下，
+添加环境变量
+MinGW_PATH=D:\MinGW
+PATH后接
+%MinGW_PATH%\bin
+%MinGW_PATH%\include
+%MinGW_PATH%\lib
+
+
+gcc --version
+
+
+输出版本信息表示安装成功。
+
+(5)
+双击VulkanSDK-1.3.204.1-Installer.exe，可选的组件全部都不勾选，安装路径选择D:\VulkanSDK\1.3.204.1
+添加环境变量
+VULKAN_SDK=D:\VulkanSDK\1.3.204.1
+VK_SDK_PATH=D:\VulkanSDK\1.3.204.1
+PATH后接
+%VULKAN_SDK%\Bin
+
+必须要关掉上面打开的x64 Native Tools Command Prompt for VS 2017终端，
+重新以管理员身份运行这个终端，环境变量才生效。
+
+(6)
+构建ncnn库
+桌面左下角点放大镜，搜索x64 Native Tools Command Prompt for VS 2017，右键以管理员身份运行
+(其中的cmake命令有3处要指定protobuf的安装路径为D://protobuf-3.4.0，根据实际安装路径修改
+其中的cmake命令有1处要指定opencv库中OpenCVConfig.cmake文件的路径，即-DOpenCV_DIR=D://opencv/build，根据实际安装路径修改
+)
+
+d:
+cd D://GitHub/ncnn
+mkdir -p build
+cd build
+cmake -G"NMake Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=%cd%/install -DProtobuf_INCLUDE_DIR=D://protobuf-3.4.0/build/install/include -DProtobuf_LIBRARIES=D://protobuf-3.4.0/build/install/lib/libprotobuf.lib -DProtobuf_PROTOC_EXECUTABLE=D://protobuf-3.4.0/build/install/bin/protoc.exe -DOpenCV_DIR=D://opencv/build -DNCNN_VULKAN=ON ..
+nmake
+nmake install
+
+
+如果nmake报错
+ncnn\src\mat.h(18): fatal error C1083: Cannot open include file: 'stdlib.h': No such file or directory
+
+
+(7)
+运行示例
+cd ../examples
+../build/examples/squeezenet ../images/256-ncnn.png
+
+
+cd ../benchmark
+../build/benchmark/benchncnn 10 $(nproc) 0 0
+
+
+cd ../build/benchmark
+benchncnn 10 $(nproc) 0 0
+
+
+
+
+
+
+
+
+
+
+
+
