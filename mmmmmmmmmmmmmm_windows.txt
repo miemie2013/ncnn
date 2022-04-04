@@ -73,6 +73,18 @@ nmake install
 
 如果nmake报错
 ncnn\src\mat.h(18): fatal error C1083: Cannot open include file: 'stdlib.h': No such file or directory
+include_directories(D:\MinGW\include)
+
+
+如果nmake报错
+ncnn\glslang\glslang\genericcodegen\../Include/Common.h(40): fatal error C1083: Cannot open include file: 'algorithm': No such file or directory
+include_directories(D:\MinGW\lib\gcc\mingw32\9.2.0\include\c++\experimental)
+
+
+include_directories(D:\MinGW\lib\gcc\mingw32\9.2.0\include)
+
+
+
 
 
 (7)
