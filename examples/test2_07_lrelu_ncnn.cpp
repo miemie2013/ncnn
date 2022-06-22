@@ -26,6 +26,7 @@
 
 void pretty_print(const ncnn::Mat& m)
 {
+    FILE* fp = fopen("output.txt", "wb");
     for (int q=0; q<m.c; q++)
     {
         const float* ptr = m.channel(q);
@@ -33,6 +34,7 @@ void pretty_print(const ncnn::Mat& m)
         {
             for (int x=0; x<m.w; x++)
             {
+                fprintf(fp, "%e,", ptr[x]);
                 printf("%f ", ptr[x]);
             }
             ptr += m.w;
@@ -42,64 +44,39 @@ void pretty_print(const ncnn::Mat& m)
     }
 }
 
-static int detect_squeezenet(const cv::Mat& bgr, std::vector<float>& cls_scores, const char* param_path, const char* bin_path)
+static int detect_PPYOLOE(const cv::Mat& bgr, std::vector<float>& cls_scores, const char* param_path, const char* bin_path)
 {
-    ncnn::Net squeezenet;
+    ncnn::Net model;
 
-    squeezenet.opt.use_vulkan_compute = true;
+    model.opt.use_vulkan_compute = true;
 
-    // the ncnn model https://github.com/nihui/ncnn-assets/tree/master/models
-//    squeezenet.load_param("squeezenet_v1.1.param");
-//    squeezenet.load_model("squeezenet_v1.1.bin");
-    squeezenet.load_param(param_path);
-    squeezenet.load_model(bin_path);
+    model.load_param(param_path);
+    model.load_model(bin_path);
 
-    ncnn::Mat in = ncnn::Mat::from_pixels_resize(bgr.data, ncnn::Mat::PIXEL_BGR, bgr.cols, bgr.rows, 227, 227);
-    pretty_print(in);
+    // get ncnn::Mat with RGB format like PPYOLOE do.
+    ncnn::Mat in_rgb = ncnn::Mat::from_pixels(bgr.data, ncnn::Mat::PIXEL_BGR2RGB, bgr.cols, bgr.rows);
+    ncnn::Mat in_resize;
+    // Interp image with cv2.INTER_CUBIC like PPYOLOE do.
+    ncnn::resize_bicubic(in_rgb, in_resize, 6, 6);
 
-    const float mean_vals[3] = {104.f, 117.f, 123.f};
-    in.substract_mean_normalize(mean_vals, 0);
+    // Normalize image with the same mean and std like PPYOLOE do.
+//    mean=[123.675, 116.28, 103.53]
+//    std=[58.395, 57.12, 57.375]
+    const float mean_vals[3] = {123.675f, 116.28f, 103.53f};
+    const float norm_vals[3] = {1.0f/58.395f, 1.0f/57.12f, 1.0f/57.375f};
+    in_resize.substract_mean_normalize(mean_vals, norm_vals);
 
-    ncnn::Extractor ex = squeezenet.create_extractor();
+    ncnn::Extractor ex = model.create_extractor();
 
-    ex.input("data", in);
+    ex.input("images", in_resize);
 
     ncnn::Mat out;
-    ex.extract("prob", out);
-
-    cls_scores.resize(out.w);
-    for (int j = 0; j < out.w; j++)
-    {
-        cls_scores[j] = out[j];
-    }
+    ex.extract("output", out);
+    pretty_print(out);
 
     return 0;
 }
 
-static int print_topk(const std::vector<float>& cls_scores, int topk)
-{
-    // partial sort topk with index
-    int size = cls_scores.size();
-    std::vector<std::pair<float, int> > vec;
-    vec.resize(size);
-    for (int i = 0; i < size; i++)
-    {
-        vec[i] = std::make_pair(cls_scores[i], i);
-    }
-
-    std::partial_sort(vec.begin(), vec.begin() + topk, vec.end(),
-                      std::greater<std::pair<float, int> >());
-
-    // print topk and score
-    for (int i = 0; i < topk; i++)
-    {
-        float score = vec[i].first;
-        int index = vec[i].second;
-        fprintf(stderr, "%d = %f\n", index, score);
-    }
-
-    return 0;
-}
 
 int main(int argc, char** argv)
 {
@@ -121,9 +98,7 @@ int main(int argc, char** argv)
     }
 
     std::vector<float> cls_scores;
-    detect_squeezenet(m, cls_scores, param_path, bin_path);
-
-    print_topk(cls_scores, 3);
+    detect_PPYOLOE(m, cls_scores, param_path, bin_path);
 
     return 0;
 }

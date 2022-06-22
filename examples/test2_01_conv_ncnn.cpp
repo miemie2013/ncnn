@@ -26,6 +26,7 @@
 
 void pretty_print(const ncnn::Mat& m)
 {
+    FILE* fp = fopen("output.txt", "wb");
     for (int q=0; q<m.c; q++)
     {
         const float* ptr = m.channel(q);
@@ -33,6 +34,7 @@ void pretty_print(const ncnn::Mat& m)
         {
             for (int x=0; x<m.w; x++)
             {
+                fprintf(fp, "%e,", ptr[x]);
                 printf("%f ", ptr[x]);
             }
             ptr += m.w;
@@ -54,52 +56,28 @@ static int detect_squeezenet(const cv::Mat& bgr, std::vector<float>& cls_scores,
     squeezenet.load_param(param_path);
     squeezenet.load_model(bin_path);
 
-    ncnn::Mat in = ncnn::Mat::from_pixels_resize(bgr.data, ncnn::Mat::PIXEL_BGR, bgr.cols, bgr.rows, 227, 227);
-    pretty_print(in);
+//    ncnn::Mat in = ncnn::Mat::from_pixels_resize(bgr.data, ncnn::Mat::PIXEL_BGR, bgr.cols, bgr.rows, 227, 227);
+    ncnn::Mat in = ncnn::Mat::from_pixels(bgr.data, ncnn::Mat::PIXEL_BGR, bgr.cols, bgr.rows);
+//    ncnn::Mat in = ncnn::Mat::from_pixels(bgr.data, ncnn::Mat::PIXEL_RGB2BGR, bgr.cols, bgr.rows);
+//    pretty_print(in);
 
-    const float mean_vals[3] = {104.f, 117.f, 123.f};
-    in.substract_mean_normalize(mean_vals, 0);
+//    mean = [117.3, 126.5, 130.2]
+//    std = [108.4, 117.3, 127.6]
+    const float mean_vals[3] = {117.3f, 126.5f, 130.2f};
+    const float norm_vals[3] = {1.0f/108.4f, 1.0f/117.3f, 1.0f/127.6f};
+    in.substract_mean_normalize(mean_vals, norm_vals);
 
     ncnn::Extractor ex = squeezenet.create_extractor();
 
-    ex.input("data", in);
+    ex.input("images", in);
 
     ncnn::Mat out;
-    ex.extract("prob", out);
-
-    cls_scores.resize(out.w);
-    for (int j = 0; j < out.w; j++)
-    {
-        cls_scores[j] = out[j];
-    }
+    ex.extract("output", out);
+    pretty_print(out);
 
     return 0;
 }
 
-static int print_topk(const std::vector<float>& cls_scores, int topk)
-{
-    // partial sort topk with index
-    int size = cls_scores.size();
-    std::vector<std::pair<float, int> > vec;
-    vec.resize(size);
-    for (int i = 0; i < size; i++)
-    {
-        vec[i] = std::make_pair(cls_scores[i], i);
-    }
-
-    std::partial_sort(vec.begin(), vec.begin() + topk, vec.end(),
-                      std::greater<std::pair<float, int> >());
-
-    // print topk and score
-    for (int i = 0; i < topk; i++)
-    {
-        float score = vec[i].first;
-        int index = vec[i].second;
-        fprintf(stderr, "%d = %f\n", index, score);
-    }
-
-    return 0;
-}
 
 int main(int argc, char** argv)
 {
@@ -122,8 +100,6 @@ int main(int argc, char** argv)
 
     std::vector<float> cls_scores;
     detect_squeezenet(m, cls_scores, param_path, bin_path);
-
-    print_topk(cls_scores, 3);
 
     return 0;
 }

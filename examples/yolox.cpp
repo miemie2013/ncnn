@@ -46,31 +46,32 @@ public:
         int h = bottom_blob.h;
         int channels = bottom_blob.c;
 
-        int outw = w / 2;
-        int outh = h / 2;
-        int outc = channels * 4;
+        int out_W = w / 2;
+        int out_H = h / 2;
+        int out_C = channels * 4;
 
-        top_blob.create(outw, outh, outc, 4u, 1, opt.blob_allocator);
+        top_blob.create(out_W, out_H, out_C, 4u, 1, opt.blob_allocator);
         if (top_blob.empty())
             return -100;
 
+        // miemie2013: 遍历输出张量top_blob的每个通道C，每个H，每个W，写入数据。
         #pragma omp parallel for num_threads(opt.num_threads)
-        for (int p = 0; p < outc; p++)
+        for (int p = 0; p < out_C; p++)
         {
-            const float* ptr = bottom_blob.channel(p % channels).row((p / channels) % 2) + ((p / channels) / 2);
-            float* outptr = top_blob.channel(p);
+            const float* input_H_ptr = bottom_blob.channel(p % channels).row((p / channels) % 2) + ((p / channels) / 2);
+            float* output_C_ptr = top_blob.channel(p);
 
-            for (int i = 0; i < outh; i++)
+            for (int i = 0; i < out_H; i++)
             {
-                for (int j = 0; j < outw; j++)
+                for (int j = 0; j < out_W; j++)
                 {
-                    *outptr = *ptr;
+                    *output_C_ptr = *input_H_ptr;
 
-                    outptr += 1;
-                    ptr += 2;
+                    output_C_ptr += 1;
+                    input_H_ptr += 2;
                 }
 
-                ptr += w;
+                input_H_ptr += w;
             }
         }
 
