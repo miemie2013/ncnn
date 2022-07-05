@@ -128,18 +128,40 @@ def get_act_fn(act=None, trt=False):
 class LRELU(nn.Module):
     def __init__(self):
         super(LRELU, self).__init__()
-        self.act = nn.LeakyReLU(0.95)
-        self.act_name = 'leaky_relu'
+        # self.fc = nn.Linear(3, 2)
+        lr_multiplier = 1.0
+        out_features = 2
+        in_features = 3
+        bias_init = 2.5
+        self.weight = torch.nn.Parameter(torch.randn([out_features, in_features]) / lr_multiplier)
+        self.bias = torch.nn.Parameter(torch.full([out_features], np.float32(bias_init)))
+        self.weight_gain = lr_multiplier / np.sqrt(in_features)
+        self.bias_gain = lr_multiplier
+        # self.act = nn.LeakyReLU(0.95)
+        # self.act_name = 'leaky_relu'
 
     def forward(self, x):
-        x = self.act(x)
-        x = F.softmax(x, dim=1)
+        # x = x.mean((2, 3), keepdim=False)
+        #
+        # w = self.weight.to(x.dtype) * self.weight_gain
+        # b = self.bias
+        # if b is not None:
+        #     b = b.to(x.dtype)
+        #     if self.bias_gain != 1:
+        #         b = b * self.bias_gain
+        #
+        # x = torch.addmm(b.unsqueeze(0), x, w.t())
+        # x = self.fc(x)
+
+        # x = self.act(x)
+        # x = F.softmax(x, dim=1)
 
 
 
         # x = F.interpolate(x, scale_factor=0.5, mode='bicubic')
         # x = F.adaptive_avg_pool2d(x, (1, 1))
         # x = x.permute((0, 2, 3, 1))
+        x = x.permute((1, 0, 2, 3))
         # x = x.reshape((1, -1, 3))
         # x = x.sum([3, ])
         # x = x.permute((0, 2, 1))
@@ -160,10 +182,10 @@ class LRELU(nn.Module):
         return x
 
     def export_ncnn(self, ncnn_data, bottom_names):
-        bottom_names = ncnn_utils.activation(ncnn_data, bottom_names, self.act_name, args={'negative_slope': 0.95,})
-        bottom_names = ncnn_utils.softmax(ncnn_data, bottom_names, dim=1)
+        # bottom_names = ncnn_utils.activation(ncnn_data, bottom_names, self.act_name, args={'negative_slope': 0.95,})
+        # bottom_names = ncnn_utils.softmax(ncnn_data, bottom_names, dim=1)
         # bottom_names = ncnn_utils.interpolate(ncnn_data, bottom_names, scale_factor=0.5, mode='bicubic')
-        # bottom_names = ncnn_utils.permute(ncnn_data, bottom_names, perm='(0, 2, 3, 1)')
+        bottom_names = ncnn_utils.permute(ncnn_data, bottom_names, perm='(1, 0, 2, 3)')
         # bottom_names = ncnn_utils.reshape(ncnn_data, bottom_names, (1, -1, 3))
         return bottom_names
 
@@ -1325,6 +1347,63 @@ class PPYOLOE(torch.nn.Module):
         # print(body_feats_names)
         # print(fpn_feats_names)
         return outputs
+
+
+
+def add_coord(x, data_format):
+    b = x.shape[0]
+    if data_format == 'NCHW':
+        h, w = x.shape[2], x.shape[3]
+    else:
+        h, w = x.shape[1], x.shape[2]
+
+    gx = torch.arange(0, w, dtype=x.dtype, device=x.device) / (w - 1.) * 2.0 - 1.
+    gy = torch.arange(0, h, dtype=x.dtype, device=x.device) / (h - 1.) * 2.0 - 1.
+
+    if data_format == 'NCHW':
+        gx = gx.reshape([1, 1, 1, w]).expand([b, 1, h, w])
+        gy = gy.reshape([1, 1, h, 1]).expand([b, 1, h, w])
+    else:
+        gx = gx.reshape([1, 1, w, 1]).expand([b, h, w, 1])
+        gy = gy.reshape([1, h, 1, 1]).expand([b, h, w, 1])
+
+    gx.requires_grad = False
+    gy.requires_grad = False
+    return gx, gy
+
+
+class CoordConv(torch.nn.Module):
+    def __init__(self,
+                 ch_in,
+                 ch_out,
+                 filter_size,
+                 padding,
+                 data_format='NCHW'):
+        super(CoordConv, self).__init__()
+        self.conv = ConvBNLayer(
+            ch_in + 2, ch_out, filter_size, padding=padding, act=None)
+        self.data_format = data_format
+
+    def forward(self, x):
+        gx, gy = add_coord(x, self.data_format)
+        if self.data_format == 'NCHW':
+            y = torch.cat([x, gx, gy], 1)
+        else:
+            y = torch.cat([x, gx, gy], -1)
+        y = self.conv(y)
+        return y
+
+    def export_ncnn(self, ncnn_data, bottom_names):
+        bottom_names = ncnn_utils.coordconcat(ncnn_data, bottom_names)
+        bottom_names = self.conv.export_ncnn(ncnn_data, bottom_names)
+        return bottom_names
+
+
+
+
+
+
+
 
 
 

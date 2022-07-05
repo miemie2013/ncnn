@@ -66,6 +66,9 @@ d:
 
 cd D://GitHub/ncnn
 
+cd D://GitHub/ncnn2
+
+
 mkdir -p build
 
 cd build

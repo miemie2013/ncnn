@@ -26,19 +26,19 @@
 
 void pretty_print(const ncnn::Mat& m)
 {
-    FILE* fp = fopen("output.txt", "wb");
-    for (int q=0; q<m.c; q++)
+    int w = m.w;
+    int h = m.h;
+    int d = m.d;
+    int channels = m.c;
+    int size = w * h * d;
+
+    for (int q = 0; q < channels; q++)
     {
         const float* ptr = m.channel(q);
-        for (int y=0; y<m.h; y++)
+        for (int i = 0; i < size; i++)
         {
-            for (int x=0; x<m.w; x++)
-            {
-                fprintf(fp, "%e,", ptr[x]);
-                printf("%f ", ptr[x]);
-            }
-            ptr += m.w;
-            printf("\n");
+            float x = ptr[i];
+            printf("%f ", x);
         }
         printf("------------------------\n");
     }

@@ -27,6 +27,7 @@
 #endif
 #include <stdio.h>
 #include <vector>
+#include <math.h>
 
 void pretty_print(const ncnn::Mat& m)
 {
@@ -68,6 +69,7 @@ void save_data(const ncnn::Mat& m)
 
 void print_shape(const ncnn::Mat& m, const char* name)
 {
+    int dims = m.dims;
     int C = m.c;
     int D = m.d;
     int H = m.h;
@@ -76,78 +78,50 @@ void print_shape(const ncnn::Mat& m, const char* name)
     printf("D=%d\n", D);
     printf("H=%d\n", H);
     printf("W=%d\n", W);
+    printf("dims=%d\n", dims);
 }
 
 
 
-class CoordConcat : public ncnn::Layer
+class Square : public ncnn::Layer
 {
 public:
-    CoordConcat()
+    Square()
     {
         one_blob_only = true;
-        support_inplace = false;
+        support_inplace = true;
     }
 
-    virtual int load_param(const ncnn::ParamDict& pd)
+    virtual int forward_inplace(ncnn::Mat& bottom_top_blob, const ncnn::Option& opt) const
     {
-        axis = pd.get(0, 0);
-        return 0;
-    }
+        int w = bottom_top_blob.w;
+        int h = bottom_top_blob.h;
+        int d = bottom_top_blob.d;
+        int channels = bottom_top_blob.c;
+        int size = w * h * d;
 
-    virtual int forward(const ncnn::Mat& bottom_blob, ncnn::Mat& top_blob, const ncnn::Option& opt) const
-    {
-        int dims = bottom_blob.dims;   // miemie2013: input tensor dims
-        size_t elemsize = bottom_blob.elemsize;  // miemie2013: for example, one float32 element use 4 Bytes.
-        int positive_axis = axis < 0 ? dims + axis : axis;
+        printf("Square input C=%d\n", channels);
+        printf("input D=%d\n", d);
+        printf("input H=%d\n", h);
+        printf("input W=%d\n", w);
 
-        if (dims == 3 && positive_axis == 0)
+        #pragma omp parallel for num_threads(opt.num_threads)
+        for (int q = 0; q < channels; q++)
         {
-            // miemie2013: like python, concat tensors whose shapes are [N, c1, H, W], [N, c2, H, W] with axis == 1 .  don't use #pragma omp parallel
-            // concat dim
-            int w = bottom_blob.w;
-            int h = bottom_blob.h;
-            int c = bottom_blob.c;
+            float* ptr = bottom_top_blob.channel(q);
 
-            // miemie2013: y = torch.cat([x, gx, gy], 1)   the last 2 channel is x and y
-            int out_C = c + 2;
-
-            top_blob.create(w, h, out_C, elemsize, opt.blob_allocator);
-            if (top_blob.empty())
-                return -100;
-
-            // miemie2013: the ori tensor is in the front. I use concat's code.
-            size_t size = bottom_blob.cstep * c;
-            const unsigned char* ptr = bottom_blob;
-            unsigned char* outptr = top_blob.channel(0);
-            memcpy(outptr, ptr, size * elemsize);
-
-
-            float* x_ptr = top_blob.channel(out_C - 2);
-            float* y_ptr = top_blob.channel(out_C - 1);
-            // miemie2013: x and y is in the back. Use  #pragma omp parallel
-            #pragma omp parallel for num_threads(opt.num_threads)
-            for (int i = 0; i < h; i++)
+            for (int i = 0; i < size; i++)
             {
-                float y = (float)i / ((float)h - 1.f) * 2.f - 1.f;
-                for (int j = 0; j < w; j++)
-                {
-                    float x = (float)j / ((float)w - 1.f) * 2.f - 1.f;
-                    x_ptr[i * w + j] = x;
-                    y_ptr[i * w + j] = y;
-                }
+                float x = ptr[i];
+                ptr[i] = static_cast<float>(x * x);
             }
-
-            return 0;
         }
 
         return 0;
     }
-public:
-    int axis;
 };
 
-DEFINE_LAYER_CREATOR(CoordConcat)
+DEFINE_LAYER_CREATOR(Square)
 
 
 // refer to Convolution layer.
@@ -251,83 +225,70 @@ public:
 DEFINE_LAYER_CREATOR(Shell)
 
 
-class Square : public ncnn::Layer
+
+
+static int detect_PPYOLOE(const char* z_path, std::vector<float>& cls_scores, const char* param_path, const char* bin_path)
 {
-public:
-    Square()
+    // get input.   8 4 4 2 8 3 3 1 0
+    int img_c = 8;
+    int img_h = 4;
+    int img_w = 4;
+    int out_C = 2;
+    int in_C = 8;
+    int kH = 3;
+    int kW = 3;
+    int stride = 1;
+    int padding = 0;
+
+
+
+    FILE* fp = fopen(z_path, "rb");
+    if (!fp)
     {
-        one_blob_only = true;
-        support_inplace = true;
+        printf("fopen %s failed", z_path);
+        return -1;
     }
+    ncnn::DataReaderFromStdio dr(fp);
+    ncnn::ModelBinFromDataReader mb(dr);
+    ncnn::Mat img = mb.load(img_c * img_h * img_w, 0);
+    ncnn::Mat weight = mb.load(out_C * in_C * kH * kW, 1);
+    fclose(fp);
 
-    virtual int forward_inplace(ncnn::Mat& bottom_top_blob, const ncnn::Option& opt) const
-    {
-        int w = bottom_top_blob.w;
-        int h = bottom_top_blob.h;
-        int d = bottom_top_blob.d;
-        int channels = bottom_top_blob.c;
-        int size = w * h * d;
+//    img = img.reshape(img_w, img_h, 1, img_c);
+    img = img.reshape(img_w, img_h, img_c);
+    weight = weight.reshape(kW, kH, in_C, out_C);
 
-        printf("Square input C=%d\n", channels);
-        printf("input D=%d\n", d);
-        printf("input H=%d\n", h);
-        printf("input W=%d\n", w);
+    print_shape(img, "img");
+    pretty_print(img);
+    print_shape(weight, "weight");
+//    pretty_print(weight);
+//    save_data(img);
+//    save_data(weight);
 
-        #pragma omp parallel for num_threads(opt.num_threads)
-        for (int q = 0; q < channels; q++)
-        {
-            float* ptr = bottom_top_blob.channel(q);
-
-            for (int i = 0; i < size; i++)
-            {
-                float x = ptr[i];
-                ptr[i] = static_cast<float>(x * x);
-            }
-        }
-
-        return 0;
-    }
-};
-
-DEFINE_LAYER_CREATOR(Square)
-
-
-
-
-
-static int detect_PPYOLOE(const cv::Mat& bgr, std::vector<float>& cls_scores, const char* param_path, const char* bin_path)
-{
     ncnn::Net model;
 
-    model.opt.use_vulkan_compute = true;
+//    model.opt.use_vulkan_compute = true;
 
-    model.register_custom_layer("CoordConcat", CoordConcat_layer_creator);
-    model.register_custom_layer("Shell", Shell_layer_creator);
+    model.opt.use_vulkan_compute = false;
+    model.opt.use_fp16_storage = false;
+//    model.opt.use_fp16_packed = false;
+//    model.opt.use_fp16_storage = false;
+//    model.opt.use_fp16_arithmetic = false;
+
     model.register_custom_layer("Square", Square_layer_creator);
+    model.register_custom_layer("Shell", Shell_layer_creator);
 
     model.load_param(param_path);
     model.load_model(bin_path);
 
-    // get ncnn::Mat with RGB format like PPYOLOE do.
-    ncnn::Mat in_rgb = ncnn::Mat::from_pixels(bgr.data, ncnn::Mat::PIXEL_BGR2RGB, bgr.cols, bgr.rows);
-    ncnn::Mat in_resize;
-    // Interp image with cv2.INTER_CUBIC like PPYOLOE do.
-    ncnn::resize_bicubic(in_rgb, in_resize, 6, 6);
-
-    // Normalize image with the same mean and std like PPYOLOE do.
-//    mean=[123.675, 116.28, 103.53]
-//    std=[58.395, 57.12, 57.375]
-    const float mean_vals[3] = {123.675f, 116.28f, 103.53f};
-    const float norm_vals[3] = {1.0f/58.395f, 1.0f/57.12f, 1.0f/57.375f};
-    in_resize.substract_mean_normalize(mean_vals, norm_vals);
-
     ncnn::Extractor ex = model.create_extractor();
 
-    ex.input("images", in_resize);
+    ex.input("images", img);
 
     ncnn::Mat out;
     ex.extract("output", out);
-//    pretty_print(out);
+    print_shape(out, "out");
+    pretty_print(out);
     print_shape(out, "out");
     save_data(out);
 
@@ -343,19 +304,22 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    const char* imagepath = argv[1];
+    const char* z_path = argv[1];
     const char* param_path = argv[2];
     const char* bin_path = argv[3];
 
-    cv::Mat m = cv::imread(imagepath, 1);
-    if (m.empty())
-    {
-        fprintf(stderr, "cv::imread %s failed\n", imagepath);
-        return -1;
-    }
+//    const char* img_c = argv[4];
+//    const char* img_h = argv[5];
+//    const char* img_w = argv[6];
+//    const char* out_C = argv[7];
+//    const char* in_C = argv[8];
+//    const char* kH = argv[9];
+//    const char* kW = argv[10];
+//    const char* stride = argv[11];
+//    const char* padding = argv[12];
 
     std::vector<float> cls_scores;
-    detect_PPYOLOE(m, cls_scores, param_path, bin_path);
+    detect_PPYOLOE(z_path, cls_scores, param_path, bin_path);
 
     return 0;
 }
