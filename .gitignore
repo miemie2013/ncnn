@@ -15,4 +15,6 @@ my_tests/*.onnx
 my_tests/*.bin
 my_tests/*.param
 
+*/1111.jpg
+*/1112.jpg
 

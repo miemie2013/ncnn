@@ -1,16 +1,13 @@
-# code was heavily based on https://github.com/clovaai/stargan-v2
-# Users should be careful about adopting these functions in any commercial matters.
-# https://github.com/clovaai/stargan-v2#license
 import torch
 from torch import nn
 import torch.nn.functional as F
-import ncnn_utils as ncnn_utils
 
 import numpy as np
 import math
 import scipy
 import scipy.signal
 import warnings
+import ncnn_utils as ncnn_utils
 
 
 class suppress_tracer_warnings(warnings.catch_warnings):
@@ -301,7 +298,6 @@ def _conv2d_wrapper2ncnn(ncnn_data, bottom_names, weight_shape, stride=1, paddin
         return bottom_names
 
 
-
 def _parse_scaling(scaling):
     # scaling 一变二
     if isinstance(scaling, int):
@@ -352,7 +348,6 @@ def upfirdn2d(x, f, up=1, down=1, padding=0, flip_filter=False, gain=1):
     # Downsample by throwing away pixels.
     x = x[:, :, ::downy, ::downx]
     return x
-
 
 
 def upfirdn2d2ncnn(ncnn_data, bottom_names, f, out_C, up=1, down=1, padding=0, flip_filter=False, gain=1):
@@ -636,6 +631,7 @@ def upsample2d(x, f, up=2, padding=0, flip_filter=False, gain=1):
     ]
     return upfirdn2d(x, f, up=up, padding=p, flip_filter=flip_filter, gain=gain*upx*upy)
 
+
 def upsample2d2ncnn(ncnn_data, bottom_names, f, out_C, up=2, padding=0, flip_filter=False, gain=1):
     upx, upy = _parse_scaling(up)
     padx0, padx1, pady0, pady1 = _parse_padding(padding)
@@ -731,9 +727,6 @@ class FullyConnectedLayer(nn.Module):
         self.activation = activation
         self.weight = torch.nn.Parameter(torch.randn([out_features, in_features]) / lr_multiplier)
         self.bias = torch.nn.Parameter(torch.full([out_features], np.float32(bias_init))) if bias else None
-        with torch.no_grad():
-            self.weight.copy_(torch.normal(mean=0., std=0.05, size=self.weight.shape))
-            self.bias.copy_(torch.normal(mean=0., std=0.05, size=self.bias.shape))
         self.weight_gain = lr_multiplier / np.sqrt(in_features)
         self.bias_gain = lr_multiplier
 
@@ -782,12 +775,6 @@ class FullyConnectedLayer(nn.Module):
 def normalize_2nd_moment(x, dim=1, eps=1e-8):
     return x * (x.square().mean(dim=dim, keepdim=True) + eps).rsqrt()
 
-def normalize_2nd_moment2(x, dim=1, eps=1e-8):
-    temp = x.square()
-    temp = temp.mean(dim=dim, keepdim=True) + eps
-    temp = temp.rsqrt()
-    x = x * temp
-    return x
 
 def normalize_2nd_moment2ncnn(ncnn_data, x, dim=1, eps=1e-8):
     temp = ncnn_utils.square(ncnn_data, x)
@@ -883,15 +870,20 @@ class StyleGANv2ADA_MappingNetwork(nn.Module):
 
     def export_ncnn(self, ncnn_data, bottom_names, truncation_psi=1, truncation_cutoff=None, skip_w_avg_update=False):
         x = None
+        z, coeff = bottom_names
         if self.z_dim > 0:
-            x = normalize_2nd_moment2ncnn(ncnn_data, bottom_names)
+            x = normalize_2nd_moment2ncnn(ncnn_data, [z, ])
         if self.c_dim > 0:
             raise NotImplementedError("not implemented.")
+
+        w_avg_names = ncnn_utils.shell(ncnn_data, x, self.w_avg.unsqueeze(0).unsqueeze(0).unsqueeze(0), None, ncnn_weight_dims=1)  # [111W] 形状(ncnn)
 
         # Main layers.
         for idx in range(self.num_layers):
             layer = getattr(self, f'fc{idx}')
             x = layer.export_ncnn(ncnn_data, x)
+
+        x = ncnn_utils.lerp(ncnn_data, w_avg_names + x + [coeff, ])
         return x
 
 def modulated_conv2d(
@@ -956,6 +948,7 @@ def modulated_conv2d(
 def modulated_conv2d2ncnn(
     ncnn_data,
     bottom_names,
+    use_fp16,
     up              = 1,        # Integer upsampling factor.
     down            = 1,        # Integer downsampling factor.
     padding         = 0,        # Padding with respect to the upsampled image.
@@ -974,15 +967,25 @@ def modulated_conv2d2ncnn(
     out_channels, in_channels, kh, kw = weight_shape
 
     # Pre-normalize inputs to avoid FP16 overflow.
-    # if x.dtype == torch.float16 and demodulate:
-    #     weight = weight * (1 / np.sqrt(in_channels * kh * kw) / weight.norm(float('inf'), dim=[1,2,3], keepdim=True)) # max_Ikk
-    #     styles = styles / styles.norm(float('inf'), dim=1, keepdim=True) # max_I
+    if use_fp16 and demodulate:
+        # weight = weight * (1 / np.sqrt(in_channels * kh * kw) / weight.norm(float('inf'), dim=[1,2,3], keepdim=True)) # max_Ikk
+        # styles = styles / styles.norm(float('inf'), dim=1, keepdim=True) # max_I
+        # weight.norm(float('inf'), dim=[1,2,3], keepdim=True)表示的是求1,2,3维元素绝对值的最大值。
+        weight_abs = ncnn_utils.abs(ncnn_data, [weight, ])
+        weight_abs_max = ncnn_utils.really_reduction(ncnn_data, weight_abs, op='ReduceMax', dims=(1, 2, 3), keepdim=True)
+        weight = ncnn_utils.MulConstant(ncnn_data, [weight, ], scale=1.0 / np.sqrt(in_channels * kh * kw))
+        weight = ncnn_utils.F4DOp1D(ncnn_data, [weight[0], weight_abs_max[0]], dim=0, op='Div')
+        weight = weight[0]
+        styles_abs = ncnn_utils.abs(ncnn_data, [styles, ])
+        styles_abs_max = ncnn_utils.really_reduction(ncnn_data, styles_abs, op='ReduceMax', dims=(1, ), keepdim=True)
+        styles = ncnn_utils.binaryOp(ncnn_data, [styles, styles_abs_max[0]], op='Div')
+        styles = styles[0]
 
     # Calculate per-sample weights and demodulation coefficients.
     w = None
     dcoefs = None
     if demodulate or fused_modconv:
-        w = ncnn_utils.F4DMul1D(ncnn_data, [weight, styles], dim=1)  # [OIkk]
+        w = ncnn_utils.F4DOp1D(ncnn_data, [weight, styles], dim=1, op='Mul')  # [OIkk]
     if demodulate:
         dcoefs = ncnn_utils.square(ncnn_data, w)
         # 不要使用ReduceSum，会超出半精度浮点数的最大表示范围65504.0，造成计算结果不准确。在rsqrt里指定scale来实现ReduceSum的效果。
@@ -990,9 +993,8 @@ def modulated_conv2d2ncnn(
         scale = float(in_channels * kh * kw)
         dcoefs = ncnn_utils.rsqrt(ncnn_data, dcoefs, eps=1e-8, scale=scale)
     if demodulate and fused_modconv:
-        # F4DMul1D()要求那个1D张量在ncnn中的形状是111W (CDHW)
         dcoefs = ncnn_utils.really_reshape(ncnn_data, dcoefs, shape=(1, 1, 1, -1))
-        w = ncnn_utils.F4DMul1D(ncnn_data, [w[0], dcoefs[0]], dim=0)  # [OIkk]
+        w = ncnn_utils.F4DOp1D(ncnn_data, [w[0], dcoefs[0]], dim=0, op='Mul')  # [OIkk]
 
     # Execute by scaling the activations before and after the convolution.
     if not fused_modconv:
@@ -1071,8 +1073,10 @@ class SynthesisLayer(nn.Module):
         x = bias_act(x, self.bias.to(x.dtype), act=self.activation, gain=act_gain, clamp=act_clamp)
         return x
 
-    def export_ncnn(self, ncnn_data, bottom_names, noise_mode='random', fused_modconv=True, gain=1):
-        x, w = bottom_names
+    def export_ncnn(self, ncnn_data, bottom_names, use_fp16, ws_i, noise_mode='random', fused_modconv=True, gain=1):
+        x, ws0, ws1, mixing = bottom_names
+        w = ncnn_utils.StyleMixingSwitcher(ncnn_data, [ws0, ws1, mixing], ws_i=ws_i)
+        w = w[0]
 
         styles = self.affine.export_ncnn(ncnn_data, [w, ])
         noise = self.noise_const * self.noise_strength
@@ -1080,153 +1084,13 @@ class SynthesisLayer(nn.Module):
         w_b = ncnn_utils.shell(ncnn_data, w, self.weight, self.bias)
 
         flip_weight = (self.up == 1)  # slightly faster
-        x = modulated_conv2d2ncnn(ncnn_data, [x, w_b[0], styles[0], noise_names[0]], up=self.up,
+        x = modulated_conv2d2ncnn(ncnn_data, [x, w_b[0], styles[0], noise_names[0]], use_fp16, up=self.up,
             padding=self.padding, resample_filter_tensor=self.resample_filter, flip_weight=flip_weight, fused_modconv=fused_modconv, weight_shape=self.weight.shape)
 
         act_gain = self.act_gain * gain
         act_clamp = self.conv_clamp * gain if self.conv_clamp is not None else None
         x = bias_act2ncnn(ncnn_data, [x[0], w_b[1]], act=self.activation, gain=act_gain, clamp=act_clamp)
         return x
-
-
-class SynthesisLayer2(nn.Module):
-    def __init__(self,
-        in_channels,                    # Number of input channels.
-        out_channels,                   # Number of output channels.
-        w_dim,                          # Intermediate latent (W) dimensionality.
-        resolution,                     # Resolution of this layer.
-        kernel_size     = 3,            # Convolution kernel size.
-        up              = 1,            # Integer upsampling factor.
-        use_noise       = True,         # Enable noise input?
-        activation      = 'lrelu',      # Activation function: 'relu', 'lrelu', etc.
-        resample_filter = [1,3,3,1],    # Low-pass filter to apply when resampling activations.
-        conv_clamp      = None,         # Clamp the output of convolution layers to +-X, None = disable clamping.
-        channels_last   = False,        # Use channels_last format for the weights?
-    ):
-        super().__init__()
-        self.resolution = resolution
-        self.up = up
-        self.use_noise = use_noise
-        # self.use_noise = False
-        self.activation = activation
-        self.conv_clamp = conv_clamp
-        self.register_buffer('resample_filter', upfirdn2d_setup_filter(resample_filter))
-        self.padding = kernel_size // 2
-
-        def_gain = 1.0
-        if activation in ['relu', 'lrelu', 'swish']:  # 除了这些激活函数的def_gain = np.sqrt(2)，其余激活函数的def_gain = 1.0
-            def_gain = np.sqrt(2)
-        self.act_gain = def_gain
-
-        self.affine = FullyConnectedLayer(w_dim, in_channels, bias_init=1)
-        memory_format = torch.channels_last if channels_last else torch.contiguous_format
-        self.weight = torch.nn.Parameter(torch.randn([out_channels, in_channels, kernel_size, kernel_size]).to(memory_format=memory_format))
-        if use_noise:
-            self.register_buffer('noise_const', torch.randn([resolution, resolution]))
-            # self.noise_strength = torch.nn.Parameter(torch.zeros([]))
-            self.noise_strength = torch.nn.Parameter(torch.ones([]))
-        self.bias = torch.nn.Parameter(torch.zeros([out_channels]))
-        # my add code.
-        with torch.no_grad():
-            self.weight.copy_(torch.normal(mean=0., std=0.05, size=self.weight.shape))
-            self.bias.copy_(torch.normal(mean=0., std=0.05, size=self.bias.shape))
-        self.const = torch.nn.Parameter(torch.randn([in_channels, resolution, resolution]))
-
-    def forward(self, x, w, noise_mode='random', fused_modconv=True, gain=1):
-        if x is None:
-            x = self.const.to(dtype=torch.float32, memory_format=torch.contiguous_format)
-            x = x.unsqueeze(0).repeat([w.shape[0], 1, 1, 1])
-
-        assert noise_mode in ['random', 'const', 'none']
-        styles = self.affine(w)
-
-        noise = None
-        if self.use_noise and noise_mode == 'random':
-            noise = torch.randn([x.shape[0], 1, self.resolution, self.resolution], device=x.device) * self.noise_strength
-        if self.use_noise and noise_mode == 'const':
-            noise = self.noise_const * self.noise_strength
-
-        flip_weight = (self.up == 1) # slightly faster
-        x = modulated_conv2d(x=x, weight=self.weight, styles=styles, noise=noise, up=self.up,
-            padding=self.padding, resample_filter=self.resample_filter, flip_weight=flip_weight, fused_modconv=fused_modconv)
-
-        # act_gain = self.act_gain * gain
-        # act_clamp = self.conv_clamp * gain if self.conv_clamp is not None else None
-        # x = bias_act(x, self.bias.to(x.dtype), act=self.activation, gain=act_gain, clamp=act_clamp)
-        return x
-
-    def export_ncnn(self, ncnn_data, bottom_names, noise_mode='random', fused_modconv=True, gain=1):
-        x, w = None, None
-        if len(bottom_names) == 1:
-            w = bottom_names[0]
-        elif len(bottom_names) == 2:
-            x, w = bottom_names
-        if x is None:
-            x = self.const.to(dtype=torch.float32, memory_format=torch.contiguous_format)
-            # 注意，这个ncnn_weight_dims=3不能省，否则的话在ncnn中const的dims会是4，参与卷积运算会计算出错误结果！
-            # 把const的dims变成是3，参与卷积运算计算出正确结果！
-            const_name = ncnn_utils.shell(ncnn_data, bottom_names, x.unsqueeze(1), None, ncnn_weight_dims=3)  # [C1HW] 形状(ncnn)  dims=3
-            x = const_name[0]
-
-        styles = self.affine.export_ncnn(ncnn_data, [w, ])
-        noise = self.noise_const * self.noise_strength
-        noise_names = ncnn_utils.shell(ncnn_data, w, noise.unsqueeze(0).unsqueeze(0), None)  # [11HW] 形状(ncnn)
-        w_b = ncnn_utils.shell(ncnn_data, w, self.weight, self.bias)
-
-        flip_weight = (self.up == 1)  # slightly faster
-        x = modulated_conv2d2ncnn(ncnn_data, [x, w_b[0], styles[0], noise_names[0]], up=self.up,
-            padding=self.padding, resample_filter_tensor=self.resample_filter, flip_weight=flip_weight, fused_modconv=fused_modconv, weight_shape=self.weight.shape)
-
-        # act_gain = self.act_gain * gain
-        # act_clamp = self.conv_clamp * gain if self.conv_clamp is not None else None
-        # x = bias_act2ncnn(ncnn_data, [x[0], w_b[1]], act=self.activation, gain=act_gain, clamp=act_clamp)
-        return x
-
-
-class MyConv2d(nn.Module):
-    def __init__(self,
-        in_channels,
-        # mid_channels,
-        out_channels,
-        kernel_size     = 3,
-        padding   = 0,
-    ):
-        super().__init__()
-        self.padding = padding
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=padding, bias=False)
-        # with torch.no_grad():
-        #     self.conv1.weight.copy_(torch.normal(mean=0., std=0.05, size=self.conv1.weight.shape))
-        #     self.conv1.bias.copy_(torch.normal(mean=0., std=0.05, size=self.conv1.bias.shape))
-        # self.conv2 = nn.Conv2d(mid_channels, out_channels, kernel_size=kernel_size, padding=padding)
-        # with torch.no_grad():
-        #     self.conv2.weight.copy_(torch.normal(mean=0., std=0.05, size=self.conv2.weight.shape))
-        #     self.conv2.bias.copy_(torch.normal(mean=0., std=0.05, size=self.conv2.bias.shape))
-        self.weight = torch.nn.Parameter(torch.randn([out_channels, in_channels, kernel_size, kernel_size]))
-        # self.bias = torch.nn.Parameter(torch.zeros([out_channels]))
-        with torch.no_grad():
-            # self.weight.copy_(torch.normal(mean=0., std=0.05, size=self.weight.shape))
-            self.weight.copy_(torch.normal(mean=0., std=0.0000001, size=self.weight.shape))
-            # self.bias.copy_(torch.normal(mean=0., std=0.05, size=self.bias.shape))
-
-    def forward(self, x):
-        # x = self.conv1(x)
-        # x = self.conv2(x)
-        y = F.conv2d(x, weight=self.weight, bias=None, stride=1, padding=self.padding, dilation=1, groups=1)
-        ssssssss = self.conv1(x)
-        return ssssssss
-
-    def export_ncnn(self, ncnn_data, bottom_names):
-        bottom_names = ncnn_utils.conv2d(ncnn_data, bottom_names, self.conv1)
-        # x = bottom_names[0]
-        # bottom_names = ncnn_utils.conv2d(ncnn_data, bottom_names, self.conv2)
-        # w_b = ncnn_utils.shell(ncnn_data, bottom_names, self.conv2.weight, self.conv2.bias)
-        # w_b = ncnn_utils.shell(ncnn_data, bottom_names, self.weight, None)
-        # w = w_b[0]
-        # b = w_b[1]
-        # w = ncnn_utils.square(ncnn_data, w)
-        # w = w[0]
-        # bottom_names = ncnn_utils.Fconv2d(ncnn_data, [bottom_names[0], w], stride=1, padding=self.padding, dilation=1, groups=1)
-        return bottom_names
 
 
 class ToRGBLayer(nn.Module):
@@ -1248,13 +1112,15 @@ class ToRGBLayer(nn.Module):
         x = bias_act(x, self.bias.to(x.dtype), clamp=self.conv_clamp)
         return x
 
-    def export_ncnn(self, ncnn_data, bottom_names, noise_mode='random', fused_modconv=True, gain=1):
-        x, w = bottom_names
+    def export_ncnn(self, ncnn_data, bottom_names, use_fp16, ws_i, fused_modconv=True):
+        x, ws0, ws1, mixing = bottom_names
+        w = ncnn_utils.StyleMixingSwitcher(ncnn_data, [ws0, ws1, mixing], ws_i=ws_i)
+        w = w[0]
         styles = self.affine.export_ncnn(ncnn_data, [w, ])
         styles = ncnn_utils.MulConstant(ncnn_data, styles, scale=self.weight_gain)
 
         w_b = ncnn_utils.shell(ncnn_data, w, self.weight, self.bias)
-        x = modulated_conv2d2ncnn(ncnn_data, [x, w_b[0], styles[0]], demodulate=False, fused_modconv=fused_modconv, weight_shape=self.weight.shape)
+        x = modulated_conv2d2ncnn(ncnn_data, [x, w_b[0], styles[0]], use_fp16, demodulate=False, fused_modconv=fused_modconv, weight_shape=self.weight.shape)
         x = bias_act2ncnn(ncnn_data, [x[0], w_b[1]], clamp=self.conv_clamp)
         return x
 
@@ -1348,7 +1214,7 @@ class SynthesisBlock(nn.Module):
         assert img is None or img.dtype == torch.float32
         return x, img
 
-    def export_ncnn(self, ncnn_data, bottom_names, force_fp32=False, fused_modconv=None, **layer_kwargs):
+    def export_ncnn(self, ncnn_data, bottom_names, start_i, force_fp32=False, fused_modconv=None, **layer_kwargs):
         dtype = torch.float32
         memory_format = torch.channels_last if self.channels_last and not force_fp32 else torch.contiguous_format
         fused_modconv = True
@@ -1356,23 +1222,27 @@ class SynthesisBlock(nn.Module):
         # Input.
         img = None
         if self.in_channels == 0:
-            ws = bottom_names[0]
+            ws0, ws1, mixing = bottom_names
             x = self.const.to(dtype=dtype, memory_format=memory_format)
             # 注意，这个ncnn_weight_dims=3不能省，否则的话在ncnn中const的dims会是4，参与卷积运算会计算出错误结果！
             # 把const的dims变成是3，参与卷积运算计算出正确结果！
-            const_name = ncnn_utils.shell(ncnn_data, bottom_names, x.unsqueeze(1), None, ncnn_weight_dims=3)  # [C1HW] 形状(ncnn)  dims=3
+            const_name = ncnn_utils.shell(ncnn_data, [ws0, ], x.unsqueeze(1), None, ncnn_weight_dims=3)  # [C1HW] 形状(ncnn)  dims=3
             x = const_name[0]
         else:
-            x, img, ws = bottom_names
+            x, img, ws0, ws1, mixing = bottom_names
 
+        i = start_i
         # Main layers.
         if self.in_channels == 0:
-            x = self.conv1.export_ncnn(ncnn_data, [x, ws], fused_modconv=fused_modconv, **layer_kwargs)
+            x = self.conv1.export_ncnn(ncnn_data, [x, ws0, ws1, mixing], self.use_fp16, i, fused_modconv=fused_modconv, **layer_kwargs)
+            i += 1
         elif self.architecture == 'resnet':
             raise NotImplementedError("not implemented.")
         else:
-            x = self.conv0.export_ncnn(ncnn_data, [x, ws], fused_modconv=fused_modconv, **layer_kwargs)
-            x = self.conv1.export_ncnn(ncnn_data, [x[0], ws], fused_modconv=fused_modconv, **layer_kwargs)
+            x = self.conv0.export_ncnn(ncnn_data, [x, ws0, ws1, mixing], self.use_fp16, i, fused_modconv=fused_modconv, **layer_kwargs)
+            i += 1
+            x = self.conv1.export_ncnn(ncnn_data, [x[0], ws0, ws1, mixing], self.use_fp16, i, fused_modconv=fused_modconv, **layer_kwargs)
+            i += 1
 
         # ToRGB.
         if img is not None:
@@ -1380,7 +1250,7 @@ class SynthesisBlock(nn.Module):
             img = upsample2d2ncnn(ncnn_data, [img, ], self.resample_filter, self.img_channels)
             img = img[0]
         if self.is_last or self.architecture == 'skip':
-            y = self.torgb.export_ncnn(ncnn_data, [x[0], ws], fused_modconv=fused_modconv)
+            y = self.torgb.export_ncnn(ncnn_data, [x[0], ws0, ws1, mixing], self.use_fp16, i, fused_modconv=fused_modconv)
             if img is not None:
                 img = ncnn_utils.binaryOp(ncnn_data, [img, y[0]], op='Add')
             else:
@@ -1439,15 +1309,26 @@ class StyleGANv2ADA_SynthesisNetwork(nn.Module):
         return img
 
     def export_ncnn(self, ncnn_data, bottom_names, **block_kwargs):
-        ws = bottom_names[0]
+        ws0, ws1, mixing = bottom_names
+
+        w_idx = 0
+        starts = []
+        for res in self.block_resolutions:
+            block = getattr(self, f'b{res}')
+            starts.append(w_idx)
+            w_idx += block.num_conv
+
         x = img = None
+        i = 0
         for res in self.block_resolutions:
             block = getattr(self, f'b{res}')
             if res == 4:
-                x, img = block.export_ncnn(ncnn_data, [ws, ], **block_kwargs)
+                x, img = block.export_ncnn(ncnn_data, [ws0, ws1, mixing], starts[i], **block_kwargs)
             else:
-                x, img = block.export_ncnn(ncnn_data, [x, img, ws], **block_kwargs)
-        return [img, ]
+                x, img = block.export_ncnn(ncnn_data, [x, img, ws0, ws1, mixing], starts[i], **block_kwargs)
+            i += 1
+        # img = ncnn_utils.StyleganPost(ncnn_data, img)
+        return img
 
 
 
@@ -1933,5 +1814,103 @@ class StyleGANv2ADA_AugmentPipe(nn.Module):
 
 #----------------------------------------------------------------------------
 
+
+class SynthesisLayer2(nn.Module):
+    def __init__(self,
+        in_channels,                    # Number of input channels.
+        out_channels,                   # Number of output channels.
+        w_dim,                          # Intermediate latent (W) dimensionality.
+        resolution,                     # Resolution of this layer.
+        kernel_size     = 3,            # Convolution kernel size.
+        up              = 1,            # Integer upsampling factor.
+        use_noise       = True,         # Enable noise input?
+        activation      = 'lrelu',      # Activation function: 'relu', 'lrelu', etc.
+        resample_filter = [1,3,3,1],    # Low-pass filter to apply when resampling activations.
+        conv_clamp      = None,         # Clamp the output of convolution layers to +-X, None = disable clamping.
+        channels_last   = False,        # Use channels_last format for the weights?
+        use_fp16   = False,        # a
+    ):
+        super().__init__()
+        self.resolution = resolution
+        self.up = up
+        self.use_fp16 = use_fp16
+        self.use_noise = use_noise
+        # self.use_noise = False
+        self.activation = activation
+        self.conv_clamp = conv_clamp
+        self.register_buffer('resample_filter', upfirdn2d_setup_filter(resample_filter))
+        self.padding = kernel_size // 2
+
+        def_gain = 1.0
+        if activation in ['relu', 'lrelu', 'swish']:  # 除了这些激活函数的def_gain = np.sqrt(2)，其余激活函数的def_gain = 1.0
+            def_gain = np.sqrt(2)
+        self.act_gain = def_gain
+
+        self.affine = FullyConnectedLayer(w_dim, in_channels, bias_init=1)
+        memory_format = torch.channels_last if channels_last else torch.contiguous_format
+        self.weight = torch.nn.Parameter(torch.randn([out_channels, in_channels, kernel_size, kernel_size]).to(memory_format=memory_format))
+        if use_noise:
+            self.register_buffer('noise_const', torch.randn([resolution, resolution]))
+            # self.noise_strength = torch.nn.Parameter(torch.zeros([]))
+            self.noise_strength = torch.nn.Parameter(torch.ones([]))
+        self.bias = torch.nn.Parameter(torch.zeros([out_channels]))
+        # my add code.
+        with torch.no_grad():
+            self.weight.copy_(torch.normal(mean=0., std=0.05, size=self.weight.shape))
+            self.bias.copy_(torch.normal(mean=0., std=0.05, size=self.bias.shape))
+        self.const = torch.nn.Parameter(torch.randn([in_channels, resolution, resolution]))
+
+    def forward(self, x, w, noise_mode='random', fused_modconv=True, gain=1):
+        if x is None:
+            dtype = torch.float32
+            if self.use_fp16:
+                dtype = torch.float16
+            x = self.const.to(dtype=dtype, memory_format=torch.contiguous_format)
+            x = x.unsqueeze(0).repeat([w.shape[0], 1, 1, 1])
+
+        assert noise_mode in ['random', 'const', 'none']
+        styles = self.affine(w)
+
+        noise = None
+        if self.use_noise and noise_mode == 'random':
+            noise = torch.randn([x.shape[0], 1, self.resolution, self.resolution], device=x.device) * self.noise_strength
+        if self.use_noise and noise_mode == 'const':
+            noise = self.noise_const * self.noise_strength
+
+        flip_weight = (self.up == 1) # slightly faster
+        x = modulated_conv2d(x=x, weight=self.weight, styles=styles, noise=noise, up=self.up,
+            padding=self.padding, resample_filter=self.resample_filter, flip_weight=flip_weight, fused_modconv=fused_modconv)
+
+        # act_gain = self.act_gain * gain
+        # act_clamp = self.conv_clamp * gain if self.conv_clamp is not None else None
+        # x = bias_act(x, self.bias.to(x.dtype), act=self.activation, gain=act_gain, clamp=act_clamp)
+        return x
+
+    def export_ncnn(self, ncnn_data, bottom_names, use_fp16, noise_mode='random', fused_modconv=True, gain=1):
+        x, w = None, None
+        if len(bottom_names) == 1:
+            w = bottom_names[0]
+        elif len(bottom_names) == 2:
+            x, w = bottom_names
+        if x is None:
+            x = self.const.to(dtype=torch.float32, memory_format=torch.contiguous_format)
+            # 注意，这个ncnn_weight_dims=3不能省，否则的话在ncnn中const的dims会是4，参与卷积运算会计算出错误结果！
+            # 把const的dims变成是3，参与卷积运算计算出正确结果！
+            const_name = ncnn_utils.shell(ncnn_data, bottom_names, x.unsqueeze(1), None, ncnn_weight_dims=3)  # [C1HW] 形状(ncnn)  dims=3
+            x = const_name[0]
+
+        styles = self.affine.export_ncnn(ncnn_data, [w, ])
+        noise = self.noise_const * self.noise_strength
+        noise_names = ncnn_utils.shell(ncnn_data, w, noise.unsqueeze(0).unsqueeze(0), None)  # [11HW] 形状(ncnn)
+        w_b = ncnn_utils.shell(ncnn_data, w, self.weight, self.bias)
+
+        flip_weight = (self.up == 1)  # slightly faster
+        x = modulated_conv2d2ncnn(ncnn_data, [x, w_b[0], styles[0], noise_names[0]], use_fp16, up=self.up,
+            padding=self.padding, resample_filter_tensor=self.resample_filter, flip_weight=flip_weight, fused_modconv=fused_modconv, weight_shape=self.weight.shape)
+
+        # act_gain = self.act_gain * gain
+        # act_clamp = self.conv_clamp * gain if self.conv_clamp is not None else None
+        # x = bias_act2ncnn(ncnn_data, [x[0], w_b[1]], act=self.activation, gain=act_gain, clamp=act_clamp)
+        return x
 
 

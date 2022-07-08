@@ -49,13 +49,13 @@ void pretty_print(const ncnn::Mat& m)
     }
 }
 
-void save_data(const ncnn::Mat& m)
+void save_data(const ncnn::Mat& m, char* name)
 {
     int C = m.c;
     int D = m.d;
     int H = m.h;
     int W = m.w;
-    FILE* fp = fopen("output.txt", "wb");
+    FILE* fp = fopen(name, "wb");
     int size = W * H * D;
     for (int q=0; q<m.c; q++)
     {
@@ -74,11 +74,11 @@ void print_shape(const ncnn::Mat& m, const char* name)
     int D = m.d;
     int H = m.h;
     int W = m.w;
-    printf("%s shape C=%d\n", name, C);
+    printf("%s shape dims=%d\n", name, dims);
+    printf("C=%d\n", C);
     printf("D=%d\n", D);
     printf("H=%d\n", H);
     printf("W=%d\n", W);
-    printf("dims=%d\n", dims);
 }
 
 
@@ -118,6 +118,44 @@ public:
 };
 
 DEFINE_LAYER_CREATOR(Square)
+
+
+// miemie2013: diffrent from AbsVal Layer, Abs supports 4-dim Tensor.
+class Abs : public ncnn::Layer
+{
+public:
+    Abs()
+    {
+        one_blob_only = true;
+        support_inplace = true;
+    }
+
+    virtual int forward_inplace(ncnn::Mat& bottom_top_blob, const ncnn::Option& opt) const
+    {
+        int w = bottom_top_blob.w;
+        int h = bottom_top_blob.h;
+        int d = bottom_top_blob.d;
+        int channels = bottom_top_blob.c;
+        int size = w * h * d;
+        int dims = bottom_top_blob.dims;
+
+        #pragma omp parallel for num_threads(opt.num_threads)
+        for (int q = 0; q < channels; q++)
+        {
+            float* ptr = bottom_top_blob.channel(q);
+
+            for (int i = 0; i < size; i++)
+            {
+                if (ptr[i] < 0)
+                    ptr[i] = -ptr[i];
+            }
+        }
+
+        return 0;
+    }
+};
+
+DEFINE_LAYER_CREATOR(Abs)
 
 
 
@@ -175,6 +213,130 @@ public:
 };
 
 DEFINE_LAYER_CREATOR(Rsqrt)
+
+
+class Lerp : public ncnn::Layer
+{
+public:
+    Lerp()
+    {
+        // miemie2013: if num of input tensors > 1 or num of output tensors > 1, you must set one_blob_only = false
+        // And ncnn will use forward(const std::vector<Mat>& bottom_blobs, std::vector<Mat>& top_blobs, const Option& opt) method
+        // or forward_inplace(std::vector<Mat>& bottom_top_blobs, const Option& opt) method
+        one_blob_only = false;
+        support_inplace = false;
+    }
+
+    virtual int forward(const std::vector<ncnn::Mat>& bottom_blobs, std::vector<ncnn::Mat>& top_blobs, const ncnn::Option& opt) const
+    {
+        const ncnn::Mat& bottom_blob0 = bottom_blobs[0];
+        const ncnn::Mat& bottom_blob1 = bottom_blobs[1];
+        const ncnn::Mat& coeffs = bottom_blobs[2];
+        int w = bottom_blob1.w;
+        int h = bottom_blob1.h;
+        int d = bottom_blob1.d;
+        int channels = bottom_blob1.c;
+        int size = w * h * d;
+
+        size_t elemsize = bottom_blob1.elemsize;
+        ncnn::Mat& top_blob = top_blobs[0];
+        top_blob.create(w, h, d, channels, elemsize, opt.blob_allocator);
+        if (top_blob.empty())
+            return -100;
+
+        #pragma omp parallel for num_threads(opt.num_threads)
+        for (int q = 0; q < channels; q++)
+        {
+            const float* ptr0 = bottom_blob0.channel(q);
+            const float* ptr1 = bottom_blob1.channel(q);
+            const float* coeffs_ptr = coeffs.channel(q);
+            float* out_ptr = top_blob.channel(q);
+
+            for (int i = 0; i < size; i++)
+            {
+                float x0 = ptr0[i];
+                float x1 = ptr1[i];
+                float coeff = coeffs_ptr[0];
+                out_ptr[i] = static_cast<float>(x0 + coeff * (x1 - x0));
+            }
+        }
+
+        top_blob.dims = bottom_blob1.dims;
+
+        return 0;
+    }
+};
+
+DEFINE_LAYER_CREATOR(Lerp)
+
+
+class StyleMixingSwitcher : public ncnn::Layer
+{
+public:
+    StyleMixingSwitcher()
+    {
+        // miemie2013: if num of input tensors > 1 or num of output tensors > 1, you must set one_blob_only = false
+        // And ncnn will use forward(const std::vector<Mat>& bottom_blobs, std::vector<Mat>& top_blobs, const Option& opt) method
+        // or forward_inplace(std::vector<Mat>& bottom_top_blobs, const Option& opt) method
+        one_blob_only = false;
+        support_inplace = false;
+    }
+
+    virtual int load_param(const ncnn::ParamDict& pd)
+    {
+        ws_i = pd.get(0, 0);
+        return 0;
+    }
+
+    virtual int forward(const std::vector<ncnn::Mat>& bottom_blobs, std::vector<ncnn::Mat>& top_blobs, const ncnn::Option& opt) const
+    {
+        const ncnn::Mat& ws0 = bottom_blobs[0];
+        const ncnn::Mat& ws1 = bottom_blobs[1];
+        const ncnn::Mat& mixing = bottom_blobs[2];
+        int w = ws0.w;
+        int h = ws0.h;
+        int d = ws0.d;
+        int channels = ws0.c;
+        int size = w * h * d;
+
+        size_t elemsize = ws0.elemsize;
+        ncnn::Mat& top_blob = top_blobs[0];
+        top_blob.create(w, h, d, channels, elemsize, opt.blob_allocator);
+        if (top_blob.empty())
+            return -100;
+
+        #pragma omp parallel for num_threads(opt.num_threads)
+        for (int q = 0; q < channels; q++)
+        {
+            const float* ptr0 = ws0.channel(q);
+            const float* ptr1 = ws1.channel(q);
+            const float* mixing_ptr = mixing.channel(q);
+            float* out_ptr = top_blob.channel(q);
+
+            for (int i = 0; i < size; i++)
+            {
+                float x0 = ptr0[i];
+                float x1 = ptr1[i];
+                float mixing_ = mixing_ptr[ws_i];
+                if (mixing_ > 0.5f)
+                {
+                    out_ptr[i] = x1;
+                }else
+                {
+                    out_ptr[i] = x0;
+                }
+            }
+        }
+
+        top_blob.dims = ws0.dims;
+
+        return 0;
+    }
+public:
+    int ws_i;
+};
+
+DEFINE_LAYER_CREATOR(StyleMixingSwitcher)
 
 
 // refer to Convolution layer.
@@ -244,16 +406,7 @@ public:
         op->destroy_pipeline(opt);
         delete op;
 
-        if (target_dims == 4)
-        {
-            top_blobs[0].dims = target_dims;
-        }else if (target_dims == 3)
-        {
-            top_blobs[0].dims = target_dims;
-        }else {
-            printf("not implemented.\n");
-            return -100;
-        }
+        top_blobs[0].dims = target_dims;
 
         if (bias_term)
         {
@@ -548,10 +701,10 @@ DEFINE_LAYER_CREATOR(BiasAct)
 
 
 
-class F4DMul1D : public ncnn::Layer
+class F4DOp1D : public ncnn::Layer
 {
 public:
-    F4DMul1D()
+    F4DOp1D()
     {
         // miemie2013: if num of input tensors > 1 or num of output tensors > 1, you must set one_blob_only = false
         // And ncnn will use forward(const std::vector<Mat>& bottom_blobs, std::vector<Mat>& top_blobs, const Option& opt) method
@@ -563,6 +716,7 @@ public:
     virtual int load_param(const ncnn::ParamDict& pd)
     {
         dim = pd.get(0, 0);
+        op_id = pd.get(1, 0);
         return 0;
     }
 
@@ -575,13 +729,18 @@ public:
         int b_h = bias_data.h;
         int b_d = bias_data.d;
         int b_channels = bias_data.c;
-        if (b_channels == 1 && b_d == 1 && b_h == 1)
-        {
-            ;
+
+        int _111W_bias = 0;
+        int _C111_bias = 0;
+        if (b_channels == 1 && b_d == 1 && b_h == 1) {
+            _111W_bias = 1;
+        }else if (b_d == 1 && b_h == 1 && b_w == 1) {
+            _C111_bias = 1;
         }else {
             printf("not implemented.\n");
             return -100;
         }
+
 
         int w = bottom_blob.w;
         int h = bottom_blob.h;
@@ -600,52 +759,94 @@ public:
         if (top_blob.empty())
             return -100;
 
-        if (dim == 1)
+        if (_111W_bias)
         {
-            const float* bias_ptr = bias_data.channel(0);
-            #pragma omp parallel for num_threads(opt.num_threads)
-            for (int q = 0; q < channels; q++)
+            if (dim == 1)
             {
-                const float* in_ptr = bottom_blob.channel(q);
-                float* out_ptr = top_blob.channel(q);
-
-                for (int i = 0; i < size; i++)
+                const float* bias_ptr = bias_data.channel(0);
+                #pragma omp parallel for num_threads(opt.num_threads)
+                for (int q = 0; q < channels; q++)
                 {
-                    float bias = bias_ptr[i / wh];
-                    float x = in_ptr[i] * bias;
-                    out_ptr[i] = x;
+                    const float* in_ptr = bottom_blob.channel(q);
+                    float* out_ptr = top_blob.channel(q);
+
+                    for (int i = 0; i < size; i++)
+                    {
+                        float bias = bias_ptr[i / wh];
+                        if (op_id==0)
+                        {
+                            out_ptr[i] = in_ptr[i] * bias;
+                        }else if(op_id==1)
+                        {
+                            out_ptr[i] = in_ptr[i] / bias;
+                        }
+                    }
                 }
+                return 0;
+            }else if (dim == 0)
+            {
+                const float* bias_ptr = bias_data.channel(0);
+                #pragma omp parallel for num_threads(opt.num_threads)
+                for (int q = 0; q < channels; q++)
+                {
+                    const float* in_ptr = bottom_blob.channel(q);
+                    float* out_ptr = top_blob.channel(q);
+                    float bias = bias_ptr[q];
+
+                    for (int i = 0; i < size; i++)
+                    {
+                        if (op_id==0)
+                        {
+                            out_ptr[i] = in_ptr[i] * bias;
+                        }else if(op_id==1)
+                        {
+                            out_ptr[i] = in_ptr[i] / bias;
+                        }
+                    }
+                }
+                return 0;
+            }else {
+                printf("not implemented.\n");
+                return -100;
             }
-            return 0;
-        }else if (dim == 0)
+        }else if (_C111_bias)
         {
-            const float* bias_ptr = bias_data.channel(0);
-            #pragma omp parallel for num_threads(opt.num_threads)
-            for (int q = 0; q < channels; q++)
+            if (dim == 0)
             {
-                const float* in_ptr = bottom_blob.channel(q);
-                float* out_ptr = top_blob.channel(q);
-                float bias = bias_ptr[q];
-
-                for (int i = 0; i < size; i++)
+                #pragma omp parallel for num_threads(opt.num_threads)
+                for (int q = 0; q < channels; q++)
                 {
-                    float x = in_ptr[i] * bias;
-                    out_ptr[i] = x;
+                    const float* bias_ptr = bias_data.channel(q);
+                    const float* in_ptr = bottom_blob.channel(q);
+                    float* out_ptr = top_blob.channel(q);
+                    float bias = bias_ptr[0];
+
+                    for (int i = 0; i < size; i++)
+                    {
+                        if (op_id==0)
+                        {
+                            out_ptr[i] = in_ptr[i] * bias;
+                        }else if(op_id==1)
+                        {
+                            out_ptr[i] = in_ptr[i] / bias;
+                        }
+                    }
                 }
+                return 0;
+            }else {
+                printf("not implemented.\n");
+                return -100;
             }
-            return 0;
-        }else {
-            printf("not implemented.\n");
-            return -100;
         }
         return 0;
     }
 public:
     // param
     int dim;
+    int op_id;
 };
 
-DEFINE_LAYER_CREATOR(F4DMul1D)
+DEFINE_LAYER_CREATOR(F4DOp1D)
 
 
 
@@ -996,8 +1197,47 @@ public:
 DEFINE_LAYER_CREATOR(Up2)
 
 
+class StyleganPost : public ncnn::Layer
+{
+public:
+    StyleganPost()
+    {
+        one_blob_only = true;
+        support_inplace = true;
+    }
 
-static int detect_PPYOLOE(const char* z_path, std::vector<float>& cls_scores, const char* param_path, const char* bin_path)
+    virtual int forward_inplace(ncnn::Mat& bottom_top_blob, const ncnn::Option& opt) const
+    {
+        int w = bottom_top_blob.w;
+        int h = bottom_top_blob.h;
+        int d = bottom_top_blob.d;
+        int channels = bottom_top_blob.c;
+        int size = w * h * d;
+        int dims = bottom_top_blob.dims;
+
+        #pragma omp parallel for num_threads(opt.num_threads)
+        for (int q = 0; q < channels; q++)
+        {
+            float* ptr = bottom_top_blob.channel(q);
+
+            for (int i = 0; i < size; i++)
+            {
+                float x = ptr[i];
+                x = x * 127.5f + 128.f;
+                x = std::min(255.f, std::max(0.f, x));
+                ptr[i] = x;
+            }
+        }
+
+        return 0;
+    }
+};
+
+DEFINE_LAYER_CREATOR(StyleganPost)
+
+
+
+static int detect_PPYOLOE(const char* z_path, const char* param_path, const char* bin_path, int layer_type)
 {
     // get input z.
     int z_dim = 512;
@@ -1025,15 +1265,19 @@ static int detect_PPYOLOE(const char* z_path, std::vector<float>& cls_scores, co
 //    model.opt.use_fp16_arithmetic = false;
 
     model.register_custom_layer("Square", Square_layer_creator);
+    model.register_custom_layer("Lerp", Lerp_layer_creator);
+    model.register_custom_layer("Abs", Abs_layer_creator);
     model.register_custom_layer("Rsqrt", Rsqrt_layer_creator);
     model.register_custom_layer("Shell", Shell_layer_creator);
     model.register_custom_layer("Fmatmul", Fmatmul_layer_creator);
     model.register_custom_layer("BiasAct", BiasAct_layer_creator);
-    model.register_custom_layer("F4DMul1D", F4DMul1D_layer_creator);
+    model.register_custom_layer("F4DOp1D", F4DOp1D_layer_creator);
     model.register_custom_layer("AddNoise", AddNoise_layer_creator);
     model.register_custom_layer("MulConstant", MulConstant_layer_creator);
     model.register_custom_layer("FconvTranspose2d", FconvTranspose2d_layer_creator);
     model.register_custom_layer("Down2", Down2_layer_creator);
+    model.register_custom_layer("StyleganPost", StyleganPost_layer_creator);
+    model.register_custom_layer("StyleMixingSwitcher", StyleMixingSwitcher_layer_creator);
     model.register_custom_layer("Up2", Up2_layer_creator);
 
     model.load_param(param_path);
@@ -1041,13 +1285,35 @@ static int detect_PPYOLOE(const char* z_path, std::vector<float>& cls_scores, co
 
     ncnn::Extractor ex = model.create_extractor();
 
-    ex.input("images", z);
+    double ws_coeff = 1.0;
+    float* coeff_data = new float[1];
+    coeff_data[0] = (float)ws_coeff;
+    ncnn::Mat coeff(1, coeff_data);
+
+    int num_ws = 30;
+    float* mixing_data = new float[num_ws];
+    for(int i=0;i<num_ws;i++)
+        mixing_data[i] = 0.0f;
+    ncnn::Mat mixing(num_ws, mixing_data);
+
+    if (layer_type == 1)
+    {
+        ex.input("z", z);
+        ex.input("coeff", coeff);
+    }else if (layer_type == 0)
+    {
+        ex.input("ws0", z);
+        ex.input("ws1", z);
+        ex.input("mixing", mixing);
+    }else if (layer_type == 2)
+    {
+        ex.input("images", z);
+    }
 
     ncnn::Mat out;
     ex.extract("output", out);
-//    pretty_print(out);
     print_shape(out, "out");
-    save_data(out);
+    save_data(out, "output.txt");
 
     return 0;
 }
@@ -1055,7 +1321,7 @@ static int detect_PPYOLOE(const char* z_path, std::vector<float>& cls_scores, co
 
 int main(int argc, char** argv)
 {
-    if (argc != 4)
+    if (argc != 5)
     {
         fprintf(stderr, "Usage: %s [imagepath]\n", argv[0]);
         return -1;
@@ -1064,9 +1330,9 @@ int main(int argc, char** argv)
     const char* z_path = argv[1];
     const char* param_path = argv[2];
     const char* bin_path = argv[3];
+    int layer_type = atoi(argv[4]);
 
-    std::vector<float> cls_scores;
-    detect_PPYOLOE(z_path, cls_scores, param_path, bin_path);
+    detect_PPYOLOE(z_path, param_path, bin_path, layer_type);
 
     return 0;
 }

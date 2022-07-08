@@ -4,32 +4,63 @@ import cv2
 import numpy as np
 import ncnn_utils as ncnn_utils
 from my_tests.mmdet_nets import load_ckpt
-from my_tests.mmgan_styleganv2ada import normalize_2nd_moment, normalize_2nd_moment2, normalize_2nd_moment2ncnn
+from my_tests.mmgan_styleganv2ada import normalize_2nd_moment, normalize_2nd_moment2ncnn
 from my_tests.mmgan_styleganv2ada import FullyConnectedLayer, StyleGANv2ADA_SynthesisNetwork
+from my_tests.mmgan_styleganv3 import FullyConnectedLayer, StyleGANv3_SynthesisNetwork
+
+# w_dim = 512
+# z_dim = 512
+# c_dim = 0
+# # img_resolution = 512
+# img_resolution = 256
+# # img_resolution = 16
+# img_channels = 3
+# channel_base = 32768
+# channel_max = 512
+# num_fp16_res = 4
+# conv_clamp = 256
+# synthesis = dict(
+#     w_dim=w_dim,
+#     img_resolution=img_resolution,
+#     img_channels=img_channels,
+#     channel_base=channel_base,
+#     channel_max=channel_max,
+#     num_fp16_res=num_fp16_res,
+#     conv_clamp=conv_clamp,
+# )
+# synthesis_ema = StyleGANv2ADA_SynthesisNetwork(**synthesis)
+
 
 w_dim = 512
 z_dim = 512
 c_dim = 0
 img_resolution = 512
-# img_resolution = 16
 img_channels = 3
 channel_base = 32768
 channel_max = 512
-num_fp16_res = 4
-conv_clamp = 256
 synthesis = dict(
     w_dim=w_dim,
     img_resolution=img_resolution,
     img_channels=img_channels,
     channel_base=channel_base,
     channel_max=channel_max,
-    num_fp16_res=num_fp16_res,
-    conv_clamp=conv_clamp,
+    magnitude_ema_beta=0.999,
 )
-synthesis_ema = StyleGANv2ADA_SynthesisNetwork(**synthesis)
+stylegan_cfg = 'stylegan3-r'
+if stylegan_cfg == 'stylegan3-r':
+    synthesis['conv_kernel'] = 1
+    synthesis['channel_base'] *= 2
+    synthesis['channel_max'] *= 2
+    synthesis['use_radial_filters'] = True
+synthesis_ema = StyleGANv3_SynthesisNetwork(**synthesis)
+
+
+
 synthesis_ema.eval()
 
-ckpt = torch.load('styleganv2ada_512_afhqcat.pth', map_location="cpu")
+# ckpt = torch.load('styleganv2ada_512_afhqcat.pth', map_location="cpu")
+# ckpt = torch.load('65.pth', map_location="cpu")
+ckpt = torch.load('stylegan3_r_afhqv2_512.pth', map_location="cpu")
 synthesis_ema = load_ckpt(synthesis_ema, ckpt["synthesis_ema"])
 
 torch.save(synthesis_ema.state_dict(), "31.pth")
@@ -38,16 +69,16 @@ bp = open('31_pncnn.bin', 'wb')
 pp = ''
 layer_id = 0
 tensor_id = 0
-pp += 'Input\tlayer_%.8d\t0 1 tensor_%.8d\n' % (layer_id, tensor_id)
+pp += 'Input\tlayer_%.8d\t0 3 tensor_%.8d tensor_%.8d tensor_%.8d\n' % (layer_id, tensor_id, tensor_id + 1, tensor_id + 2)
 layer_id += 1
-tensor_id += 1
+tensor_id += 3
 
 ncnn_data = {}
 ncnn_data['bp'] = bp
 ncnn_data['pp'] = pp
 ncnn_data['layer_id'] = layer_id
 ncnn_data['tensor_id'] = tensor_id
-bottom_names = ncnn_utils.newest_bottom_names(ncnn_data)
+bottom_names = ['tensor_%.8d' % (tensor_id - 3,), 'tensor_%.8d' % (tensor_id - 2,), 'tensor_%.8d' % (tensor_id - 1,)]
 bottom_names = synthesis_ema.export_ncnn(ncnn_data, bottom_names)
 
 
@@ -56,7 +87,9 @@ bottom_names = ncnn_utils.split_input_tensor(ncnn_data, bottom_names)
 pp = ncnn_data['pp']
 layer_id = ncnn_data['layer_id']
 tensor_id = ncnn_data['tensor_id']
-pp = pp.replace('tensor_%.8d' % (0,), 'images')
+pp = pp.replace('tensor_%.8d' % (0,), 'ws0')
+pp = pp.replace('tensor_%.8d' % (1,), 'ws1')
+pp = pp.replace('tensor_%.8d' % (2,), 'mixing')
 pp = pp.replace(bottom_names[-1], 'output')
 pp = '7767517\n%d %d\n'%(layer_id, tensor_id) + pp
 with open('31_pncnn.param', 'w', encoding='utf-8') as f:

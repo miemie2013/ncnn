@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import ncnn_utils as ncnn_utils
 from my_tests.mmdet_nets import load_ckpt
-from my_tests.mmgan_styleganv2ada import normalize_2nd_moment, normalize_2nd_moment2, normalize_2nd_moment2ncnn
+from my_tests.mmgan_styleganv2ada import normalize_2nd_moment, normalize_2nd_moment2ncnn
 from my_tests.mmgan_styleganv2ada import SynthesisLayer2, StyleGANv2ADA_SynthesisNetwork
 
 w_dim = 512
@@ -36,21 +36,21 @@ channels_last = False
 fused_modconv = True
 gain = 1
 
-x_shape = [1, 512, 4, 4]
-w_shape = [1, 512]
-in_channels = 512
-out_channels = 512
-w_dim = 512
-resolution = 8
-kernel_size = 3
-up = 2
-use_noise = True
-activation = 'lrelu'
-resample_filter = [1, 3, 3, 1]
-conv_clamp = 256
-channels_last = False
-fused_modconv = True
-gain = 1
+# x_shape = [1, 512, 4, 4]
+# w_shape = [1, 512]
+# in_channels = 512
+# out_channels = 512
+# w_dim = 512
+# resolution = 8
+# kernel_size = 3
+# up = 2
+# use_noise = True
+# activation = 'lrelu'
+# resample_filter = [1, 3, 3, 1]
+# conv_clamp = 256
+# channels_last = False
+# fused_modconv = True
+# gain = 1
 
 # x_shape = [1, 512, 8, 8]
 # w_shape = [1, 512]
@@ -261,9 +261,9 @@ gain = 1
 # gain = 1
 
 
-
-in_channels = 8
-out_channels = 2
+use_fp16 = True
+# in_channels = 8
+# out_channels = 2
 
 from my_tests.mmgan_styleganv2ada import modulated_conv2d2ncnn, conv2d_resample2ncnn, upfirdn2d2ncnn, _conv2d_wrapper2ncnn
 from my_tests.mmgan_styleganv2ada import modulated_conv2d, conv2d_resample, upfirdn2d, _conv2d_wrapper, upsample2d, downsample2d
@@ -271,7 +271,7 @@ from my_tests.mmgan_styleganv2ada import SynthesisBlock, SynthesisLayer, ToRGBLa
 from my_tests.mmgan_styleganv2ada import StyleGANv2ADA_MappingNetwork, StyleGANv2ADA_SynthesisNetwork
 use_noise = True
 model = SynthesisLayer2(in_channels, out_channels, w_dim, resolution,
-                       kernel_size, up, use_noise, activation, resample_filter, conv_clamp, channels_last)
+                       kernel_size, up, use_noise, activation, resample_filter, conv_clamp, channels_last, use_fp16=use_fp16)
 model.eval()
 torch.save(model.state_dict(), "32.pth")
 
@@ -289,7 +289,7 @@ ncnn_data['pp'] = pp
 ncnn_data['layer_id'] = layer_id
 ncnn_data['tensor_id'] = tensor_id
 bottom_names = ncnn_utils.newest_bottom_names(ncnn_data)
-bottom_names = model.export_ncnn(ncnn_data, bottom_names, fused_modconv=fused_modconv, gain=gain)
+bottom_names = model.export_ncnn(ncnn_data, bottom_names, use_fp16, fused_modconv=fused_modconv, gain=gain)
 
 
 # 如果1个张量作为了n(n>1)个层的输入张量，应该用Split层将它复制n份，每1层用掉1个。

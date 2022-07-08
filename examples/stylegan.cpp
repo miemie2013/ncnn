@@ -120,6 +120,44 @@ public:
 DEFINE_LAYER_CREATOR(Square)
 
 
+// miemie2013: diffrent from AbsVal Layer, Abs supports 4-dim Tensor.
+class Abs : public ncnn::Layer
+{
+public:
+    Abs()
+    {
+        one_blob_only = true;
+        support_inplace = true;
+    }
+
+    virtual int forward_inplace(ncnn::Mat& bottom_top_blob, const ncnn::Option& opt) const
+    {
+        int w = bottom_top_blob.w;
+        int h = bottom_top_blob.h;
+        int d = bottom_top_blob.d;
+        int channels = bottom_top_blob.c;
+        int size = w * h * d;
+        int dims = bottom_top_blob.dims;
+
+        #pragma omp parallel for num_threads(opt.num_threads)
+        for (int q = 0; q < channels; q++)
+        {
+            float* ptr = bottom_top_blob.channel(q);
+
+            for (int i = 0; i < size; i++)
+            {
+                if (ptr[i] < 0)
+                    ptr[i] = -ptr[i];
+            }
+        }
+
+        return 0;
+    }
+};
+
+DEFINE_LAYER_CREATOR(Abs)
+
+
 
 class Rsqrt : public ncnn::Layer
 {
@@ -663,10 +701,10 @@ DEFINE_LAYER_CREATOR(BiasAct)
 
 
 
-class F4DMul1D : public ncnn::Layer
+class F4DOp1D : public ncnn::Layer
 {
 public:
-    F4DMul1D()
+    F4DOp1D()
     {
         // miemie2013: if num of input tensors > 1 or num of output tensors > 1, you must set one_blob_only = false
         // And ncnn will use forward(const std::vector<Mat>& bottom_blobs, std::vector<Mat>& top_blobs, const Option& opt) method
@@ -678,6 +716,7 @@ public:
     virtual int load_param(const ncnn::ParamDict& pd)
     {
         dim = pd.get(0, 0);
+        op_id = pd.get(1, 0);
         return 0;
     }
 
@@ -690,13 +729,18 @@ public:
         int b_h = bias_data.h;
         int b_d = bias_data.d;
         int b_channels = bias_data.c;
-        if (b_channels == 1 && b_d == 1 && b_h == 1)
-        {
-            ;
+
+        int _111W_bias = 0;
+        int _C111_bias = 0;
+        if (b_channels == 1 && b_d == 1 && b_h == 1) {
+            _111W_bias = 1;
+        }else if (b_d == 1 && b_h == 1 && b_w == 1) {
+            _C111_bias = 1;
         }else {
             printf("not implemented.\n");
             return -100;
         }
+
 
         int w = bottom_blob.w;
         int h = bottom_blob.h;
@@ -715,52 +759,94 @@ public:
         if (top_blob.empty())
             return -100;
 
-        if (dim == 1)
+        if (_111W_bias)
         {
-            const float* bias_ptr = bias_data.channel(0);
-            #pragma omp parallel for num_threads(opt.num_threads)
-            for (int q = 0; q < channels; q++)
+            if (dim == 1)
             {
-                const float* in_ptr = bottom_blob.channel(q);
-                float* out_ptr = top_blob.channel(q);
-
-                for (int i = 0; i < size; i++)
+                const float* bias_ptr = bias_data.channel(0);
+                #pragma omp parallel for num_threads(opt.num_threads)
+                for (int q = 0; q < channels; q++)
                 {
-                    float bias = bias_ptr[i / wh];
-                    float x = in_ptr[i] * bias;
-                    out_ptr[i] = x;
+                    const float* in_ptr = bottom_blob.channel(q);
+                    float* out_ptr = top_blob.channel(q);
+
+                    for (int i = 0; i < size; i++)
+                    {
+                        float bias = bias_ptr[i / wh];
+                        if (op_id==0)
+                        {
+                            out_ptr[i] = in_ptr[i] * bias;
+                        }else if(op_id==1)
+                        {
+                            out_ptr[i] = in_ptr[i] / bias;
+                        }
+                    }
                 }
+                return 0;
+            }else if (dim == 0)
+            {
+                const float* bias_ptr = bias_data.channel(0);
+                #pragma omp parallel for num_threads(opt.num_threads)
+                for (int q = 0; q < channels; q++)
+                {
+                    const float* in_ptr = bottom_blob.channel(q);
+                    float* out_ptr = top_blob.channel(q);
+                    float bias = bias_ptr[q];
+
+                    for (int i = 0; i < size; i++)
+                    {
+                        if (op_id==0)
+                        {
+                            out_ptr[i] = in_ptr[i] * bias;
+                        }else if(op_id==1)
+                        {
+                            out_ptr[i] = in_ptr[i] / bias;
+                        }
+                    }
+                }
+                return 0;
+            }else {
+                printf("not implemented.\n");
+                return -100;
             }
-            return 0;
-        }else if (dim == 0)
+        }else if (_C111_bias)
         {
-            const float* bias_ptr = bias_data.channel(0);
-            #pragma omp parallel for num_threads(opt.num_threads)
-            for (int q = 0; q < channels; q++)
+            if (dim == 0)
             {
-                const float* in_ptr = bottom_blob.channel(q);
-                float* out_ptr = top_blob.channel(q);
-                float bias = bias_ptr[q];
-
-                for (int i = 0; i < size; i++)
+                #pragma omp parallel for num_threads(opt.num_threads)
+                for (int q = 0; q < channels; q++)
                 {
-                    float x = in_ptr[i] * bias;
-                    out_ptr[i] = x;
+                    const float* bias_ptr = bias_data.channel(q);
+                    const float* in_ptr = bottom_blob.channel(q);
+                    float* out_ptr = top_blob.channel(q);
+                    float bias = bias_ptr[0];
+
+                    for (int i = 0; i < size; i++)
+                    {
+                        if (op_id==0)
+                        {
+                            out_ptr[i] = in_ptr[i] * bias;
+                        }else if(op_id==1)
+                        {
+                            out_ptr[i] = in_ptr[i] / bias;
+                        }
+                    }
                 }
+                return 0;
+            }else {
+                printf("not implemented.\n");
+                return -100;
             }
-            return 0;
-        }else {
-            printf("not implemented.\n");
-            return -100;
         }
         return 0;
     }
 public:
     // param
     int dim;
+    int op_id;
 };
 
-DEFINE_LAYER_CREATOR(F4DMul1D)
+DEFINE_LAYER_CREATOR(F4DOp1D)
 
 
 
@@ -1191,7 +1277,7 @@ static int stylegan_gen(const char* z0_path, const char* mapping_param_path, con
     mapping.register_custom_layer("Shell", Shell_layer_creator);
     mapping.register_custom_layer("Fmatmul", Fmatmul_layer_creator);
     mapping.register_custom_layer("BiasAct", BiasAct_layer_creator);
-    mapping.register_custom_layer("F4DMul1D", F4DMul1D_layer_creator);
+    mapping.register_custom_layer("F4DOp1D", F4DOp1D_layer_creator);
     mapping.register_custom_layer("AddNoise", AddNoise_layer_creator);
     mapping.register_custom_layer("MulConstant", MulConstant_layer_creator);
     mapping.register_custom_layer("FconvTranspose2d", FconvTranspose2d_layer_creator);
@@ -1199,12 +1285,13 @@ static int stylegan_gen(const char* z0_path, const char* mapping_param_path, con
     mapping.register_custom_layer("Up2", Up2_layer_creator);
 
     synthesis.register_custom_layer("Square", Square_layer_creator);
+    synthesis.register_custom_layer("Abs", Abs_layer_creator);
     synthesis.register_custom_layer("Rsqrt", Rsqrt_layer_creator);
     synthesis.register_custom_layer("StyleMixingSwitcher", StyleMixingSwitcher_layer_creator);
     synthesis.register_custom_layer("Shell", Shell_layer_creator);
     synthesis.register_custom_layer("Fmatmul", Fmatmul_layer_creator);
     synthesis.register_custom_layer("BiasAct", BiasAct_layer_creator);
-    synthesis.register_custom_layer("F4DMul1D", F4DMul1D_layer_creator);
+    synthesis.register_custom_layer("F4DOp1D", F4DOp1D_layer_creator);
     synthesis.register_custom_layer("AddNoise", AddNoise_layer_creator);
     synthesis.register_custom_layer("MulConstant", MulConstant_layer_creator);
     synthesis.register_custom_layer("FconvTranspose2d", FconvTranspose2d_layer_creator);
@@ -1248,6 +1335,7 @@ static int stylegan_gen(const char* z0_path, const char* mapping_param_path, con
     // ncnn::Mat in(w, h, 3);
     cv::Mat fake_img_(fake_img.h, fake_img.w, CV_8UC3);
     fake_img.to_pixels(fake_img_.data, ncnn::Mat::PIXEL_BGR2RGB);
+    cv::imwrite("stylegan_gen.jpg", fake_img_);
 
     cv::imshow("fake_img", fake_img_);
     cv::waitKey(0);
@@ -1307,7 +1395,7 @@ static int style_mixing(const char* z0_path, const char* z1_path, const char* ma
     mapping.register_custom_layer("Shell", Shell_layer_creator);
     mapping.register_custom_layer("Fmatmul", Fmatmul_layer_creator);
     mapping.register_custom_layer("BiasAct", BiasAct_layer_creator);
-    mapping.register_custom_layer("F4DMul1D", F4DMul1D_layer_creator);
+    mapping.register_custom_layer("F4DOp1D", F4DOp1D_layer_creator);
     mapping.register_custom_layer("AddNoise", AddNoise_layer_creator);
     mapping.register_custom_layer("MulConstant", MulConstant_layer_creator);
     mapping.register_custom_layer("FconvTranspose2d", FconvTranspose2d_layer_creator);
@@ -1315,12 +1403,13 @@ static int style_mixing(const char* z0_path, const char* z1_path, const char* ma
     mapping.register_custom_layer("Up2", Up2_layer_creator);
 
     synthesis.register_custom_layer("Square", Square_layer_creator);
+    synthesis.register_custom_layer("Abs", Abs_layer_creator);
     synthesis.register_custom_layer("Rsqrt", Rsqrt_layer_creator);
     synthesis.register_custom_layer("StyleMixingSwitcher", StyleMixingSwitcher_layer_creator);
     synthesis.register_custom_layer("Shell", Shell_layer_creator);
     synthesis.register_custom_layer("Fmatmul", Fmatmul_layer_creator);
     synthesis.register_custom_layer("BiasAct", BiasAct_layer_creator);
-    synthesis.register_custom_layer("F4DMul1D", F4DMul1D_layer_creator);
+    synthesis.register_custom_layer("F4DOp1D", F4DOp1D_layer_creator);
     synthesis.register_custom_layer("AddNoise", AddNoise_layer_creator);
     synthesis.register_custom_layer("MulConstant", MulConstant_layer_creator);
     synthesis.register_custom_layer("FconvTranspose2d", FconvTranspose2d_layer_creator);
@@ -1372,6 +1461,7 @@ static int style_mixing(const char* z0_path, const char* z1_path, const char* ma
     // ncnn::Mat in(w, h, 3);
     cv::Mat fake_img_(fake_img.h, fake_img.w, CV_8UC3);
     fake_img.to_pixels(fake_img_.data, ncnn::Mat::PIXEL_BGR2RGB);
+    cv::imwrite("style_mixing.jpg", fake_img_);
 
     cv::imshow("fake_img", fake_img_);
     cv::waitKey(0);
@@ -1380,15 +1470,171 @@ static int style_mixing(const char* z0_path, const char* z1_path, const char* ma
 }
 
 
+
+static void lerp(const ncnn::Mat& bottom_blob0, const ncnn::Mat& bottom_blob1, ncnn::Mat& top_blob, float coeff)
+{
+    int w = bottom_blob1.w;
+    int h = bottom_blob1.h;
+    int d = bottom_blob1.d;
+    int channels = bottom_blob1.c;
+    int size = w * h * d;
+
+    size_t elemsize = bottom_blob1.elemsize;
+    top_blob.create(w, h, d, channels, elemsize);
+
+    #pragma omp parallel for num_threads(3)
+    for (int q = 0; q < channels; q++)
+    {
+        const float* ptr0 = bottom_blob0.channel(q);
+        const float* ptr1 = bottom_blob1.channel(q);
+        float* out_ptr = top_blob.channel(q);
+
+        for (int i = 0; i < size; i++)
+        {
+            float x0 = ptr0[i];
+            float x1 = ptr1[i];
+            out_ptr[i] = static_cast<float>(x0 + coeff * (x1 - x0));
+        }
+    }
+
+    top_blob.dims = bottom_blob1.dims;
+}
+
+static int A2B(const char* z0_path, const char* z1_path, const char* mapping_param_path, const char* mapping_bin_path, const char* synthesis_param_path, const char* synthesis_bin_path, int z_dim, int num_ws, double ws_coeff, int frames, int video_fps)
+{
+    // get input z.
+    FILE* fp = fopen(z0_path, "rb");
+    if (!fp)
+    {
+        printf("fopen %s failed", z0_path);
+        return -1;
+    }
+    ncnn::DataReaderFromStdio dr(fp);
+    ncnn::ModelBinFromDataReader mb(dr);
+    ncnn::Mat z = mb.load(z_dim, 0);
+    fclose(fp);
+
+    FILE* fp2 = fopen(z1_path, "rb");
+    if (!fp2)
+    {
+        printf("fopen %s failed", z1_path);
+        return -1;
+    }
+    ncnn::DataReaderFromStdio dr2(fp2);
+    ncnn::ModelBinFromDataReader mb2(dr2);
+    ncnn::Mat z2 = mb2.load(z_dim, 0);
+    fclose(fp2);
+
+    print_shape(z, "z");
+
+    ncnn::Net mapping;
+    ncnn::Net synthesis;
+
+//    mapping.opt.use_vulkan_compute = true;
+//    synthesis.opt.use_vulkan_compute = true;
+
+    mapping.opt.use_vulkan_compute = false;
+    mapping.opt.use_fp16_storage = false;
+    mapping.opt.use_fp16_packed = false;
+    mapping.opt.use_fp16_storage = false;
+    mapping.opt.use_fp16_arithmetic = false;
+    synthesis.opt.use_vulkan_compute = false;
+    synthesis.opt.use_fp16_storage = false;
+    synthesis.opt.use_fp16_packed = false;
+    synthesis.opt.use_fp16_storage = false;
+    synthesis.opt.use_fp16_arithmetic = false;
+
+    mapping.register_custom_layer("Square", Square_layer_creator);
+    mapping.register_custom_layer("Rsqrt", Rsqrt_layer_creator);
+    mapping.register_custom_layer("Lerp", Lerp_layer_creator);
+    mapping.register_custom_layer("Shell", Shell_layer_creator);
+    mapping.register_custom_layer("Fmatmul", Fmatmul_layer_creator);
+    mapping.register_custom_layer("BiasAct", BiasAct_layer_creator);
+    mapping.register_custom_layer("F4DOp1D", F4DOp1D_layer_creator);
+    mapping.register_custom_layer("AddNoise", AddNoise_layer_creator);
+    mapping.register_custom_layer("MulConstant", MulConstant_layer_creator);
+    mapping.register_custom_layer("FconvTranspose2d", FconvTranspose2d_layer_creator);
+    mapping.register_custom_layer("Down2", Down2_layer_creator);
+    mapping.register_custom_layer("Up2", Up2_layer_creator);
+
+    synthesis.register_custom_layer("Square", Square_layer_creator);
+    synthesis.register_custom_layer("Abs", Abs_layer_creator);
+    synthesis.register_custom_layer("Rsqrt", Rsqrt_layer_creator);
+    synthesis.register_custom_layer("StyleMixingSwitcher", StyleMixingSwitcher_layer_creator);
+    synthesis.register_custom_layer("Shell", Shell_layer_creator);
+    synthesis.register_custom_layer("Fmatmul", Fmatmul_layer_creator);
+    synthesis.register_custom_layer("BiasAct", BiasAct_layer_creator);
+    synthesis.register_custom_layer("F4DOp1D", F4DOp1D_layer_creator);
+    synthesis.register_custom_layer("AddNoise", AddNoise_layer_creator);
+    synthesis.register_custom_layer("MulConstant", MulConstant_layer_creator);
+    synthesis.register_custom_layer("FconvTranspose2d", FconvTranspose2d_layer_creator);
+    synthesis.register_custom_layer("Down2", Down2_layer_creator);
+    synthesis.register_custom_layer("Up2", Up2_layer_creator);
+    synthesis.register_custom_layer("StyleganPost", StyleganPost_layer_creator);
+
+    mapping.load_param(mapping_param_path);
+    mapping.load_model(mapping_bin_path);
+    synthesis.load_param(synthesis_param_path);
+    synthesis.load_model(synthesis_bin_path);
+
+    ncnn::Extractor mapping_ex0 = mapping.create_extractor();
+    ncnn::Extractor mapping_ex1 = mapping.create_extractor();
+
+    float* coeff_data = new float[1];
+    coeff_data[0] = (float)ws_coeff;
+    ncnn::Mat coeff(1, coeff_data);
+
+    mapping_ex0.input("z", z);
+    mapping_ex0.input("coeff", coeff);
+    ncnn::Mat ws0;
+    mapping_ex0.extract("output", ws0);
+    print_shape(ws0, "ws0");
+
+    mapping_ex1.input("z", z2);
+    mapping_ex1.input("coeff", coeff);
+    ncnn::Mat ws1;
+    mapping_ex1.extract("output", ws1);
+    print_shape(ws1, "ws1");
+
+    float* mixing_data = new float[num_ws];
+    for(int i=0;i<num_ws;i++)
+        mixing_data[i] = 0.0f;
+    ncnn::Mat mixing(num_ws, mixing_data);
+
+    int total_frames = frames * (2 - 1) + 1;
+
+    for(int frame_id=0; frame_id < total_frames; frame_id++)
+    {
+        ncnn::Mat lerp_ws;
+
+        if(frame_id < total_frames - 1)
+        {
+            float beta = (float)frame_id / frames;
+            lerp(ws0, ws1, lerp_ws, beta);
+        }else
+        {
+            lerp_ws = ws1;
+        }
+        ncnn::Extractor synthesis_ex = synthesis.create_extractor();
+        synthesis_ex.input("ws0", lerp_ws);
+        synthesis_ex.input("ws1", lerp_ws);
+        synthesis_ex.input("mixing", mixing);
+        ncnn::Mat fake_img;
+        synthesis_ex.extract("output", fake_img);
+        cv::Mat fake_img_(fake_img.h, fake_img.w, CV_8UC3);
+        fake_img.to_pixels(fake_img_.data, ncnn::Mat::PIXEL_BGR2RGB);
+        char save_name[20];
+        sprintf(save_name, "%d.jpg", frame_id);
+        cv::imwrite(save_name, fake_img_);
+    }
+
+    return 0;
+}
+
+
 int main(int argc, char** argv)
 {
-//    if (argc != 7)
-//    {
-//        fprintf(stderr, "Usage: %s [imagepath]\n", argv[0]);
-//        return -1;
-//    }
-
-    // 0 means image gen; 1 means style mixing;
+    // 0 means image gen; 1 means style mixing; 2 means A2B;
     int func_id = atoi(argv[1]);
     int z_dim = atoi(argv[2]);
     int num_ws = atoi(argv[3]);
@@ -1415,6 +1661,17 @@ int main(int argc, char** argv)
         for(int i=0; i<mixing_ws_num; i++)
             mixing_ws_idx[i] = atoi(argv[11 + i]);
         style_mixing(z0_path, z1_path, mapping_param_path, mapping_bin_path, synthesis_param_path, synthesis_bin_path, z_dim, num_ws, ws_coeff, mixing_ws_idx, mixing_ws_num);
+    }else if (func_id == 2)
+    {
+        const char* z0_path = argv[5];
+        const char* z1_path = argv[6];
+        const char* mapping_param_path = argv[7];
+        const char* mapping_bin_path = argv[8];
+        const char* synthesis_param_path = argv[9];
+        const char* synthesis_bin_path = argv[10];
+        int frames = atoi(argv[11]);
+        int video_fps = atoi(argv[12]);
+        A2B(z0_path, z1_path, mapping_param_path, mapping_bin_path, synthesis_param_path, synthesis_bin_path, z_dim, num_ws, ws_coeff, frames, video_fps);
     }
 
     return 0;
