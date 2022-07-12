@@ -49,7 +49,8 @@ mapping_ema.eval()
 
 # ckpt = torch.load('styleganv2ada_512_afhqcat.pth', map_location="cpu")
 # ckpt = torch.load('65.pth', map_location="cpu")
-ckpt = torch.load('stylegan3_r_afhqv2_512.pth', map_location="cpu")
+# ckpt = torch.load('stylegan3_r_afhqv2_512.pth', map_location="cpu")
+ckpt = torch.load('77.pth', map_location="cpu")
 mapping_ema = load_ckpt(mapping_ema, ckpt["mapping_ema"])
 
 torch.save(mapping_ema.state_dict(), "30.pth")

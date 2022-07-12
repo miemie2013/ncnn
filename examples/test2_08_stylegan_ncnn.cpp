@@ -215,6 +215,141 @@ public:
 DEFINE_LAYER_CREATOR(Rsqrt)
 
 
+class Sqrt : public ncnn::Layer
+{
+public:
+    Sqrt()
+    {
+        one_blob_only = true;
+        support_inplace = true;
+    }
+
+    virtual int load_param(const ncnn::ParamDict& pd)
+    {
+        eps = pd.get(0, 0.f);
+        return 0;
+    }
+
+    virtual int forward_inplace(ncnn::Mat& bottom_top_blob, const ncnn::Option& opt) const
+    {
+        int w = bottom_top_blob.w;
+        int h = bottom_top_blob.h;
+        int d = bottom_top_blob.d;
+        int channels = bottom_top_blob.c;
+        int size = w * h * d;
+
+        #pragma omp parallel for num_threads(opt.num_threads)
+        for (int q = 0; q < channels; q++)
+        {
+            float* ptr = bottom_top_blob.channel(q);
+
+            for (int i = 0; i < size; i++)
+            {
+                float x = ptr[i];
+                ptr[i] = static_cast<float>(sqrt(eps + x));
+            }
+        }
+
+        return 0;
+    }
+public:
+    float eps;
+};
+
+DEFINE_LAYER_CREATOR(Sqrt)
+
+
+#define PI acos(-1)
+class Sin : public ncnn::Layer
+{
+public:
+    Sin()
+    {
+        one_blob_only = true;
+        support_inplace = true;
+    }
+
+    virtual int load_param(const ncnn::ParamDict& pd)
+    {
+        scale = pd.get(0, 0.f);
+        return 0;
+    }
+
+    virtual int forward_inplace(ncnn::Mat& bottom_top_blob, const ncnn::Option& opt) const
+    {
+        int w = bottom_top_blob.w;
+        int h = bottom_top_blob.h;
+        int d = bottom_top_blob.d;
+        int channels = bottom_top_blob.c;
+        int size = w * h * d;
+
+        #pragma omp parallel for num_threads(opt.num_threads)
+        for (int q = 0; q < channels; q++)
+        {
+            float* ptr = bottom_top_blob.channel(q);
+
+            for (int i = 0; i < size; i++)
+            {
+                float x = ptr[i];
+                ptr[i] = static_cast<float>(sin(scale * PI * x));
+            }
+        }
+
+        return 0;
+    }
+public:
+    float scale;
+};
+
+DEFINE_LAYER_CREATOR(Sin)
+
+
+class Clamp : public ncnn::Layer
+{
+public:
+    Clamp()
+    {
+        one_blob_only = true;
+        support_inplace = true;
+    }
+
+    virtual int load_param(const ncnn::ParamDict& pd)
+    {
+        min_v = pd.get(0, 0.f);
+        max_v = pd.get(1, 1.f);
+        return 0;
+    }
+
+    virtual int forward_inplace(ncnn::Mat& bottom_top_blob, const ncnn::Option& opt) const
+    {
+        int w = bottom_top_blob.w;
+        int h = bottom_top_blob.h;
+        int d = bottom_top_blob.d;
+        int channels = bottom_top_blob.c;
+        int size = w * h * d;
+
+        #pragma omp parallel for num_threads(opt.num_threads)
+        for (int q = 0; q < channels; q++)
+        {
+            float* ptr = bottom_top_blob.channel(q);
+
+            for (int i = 0; i < size; i++)
+            {
+                float x = ptr[i];
+                ptr[i] = std::min(max_v, std::max(min_v, x));
+            }
+        }
+
+        return 0;
+    }
+public:
+    float min_v;
+    float max_v;
+};
+
+DEFINE_LAYER_CREATOR(Clamp)
+
+
 class Lerp : public ncnn::Layer
 {
 public:
@@ -553,6 +688,7 @@ public:
         alpha = pd.get(1, 0.f);
         gain = pd.get(2, 0.f);
         clamp = pd.get(3, 0.f);
+        bias_term = pd.get(4, 1);
         return 0;
     }
 
@@ -603,89 +739,127 @@ public:
     virtual int forward(const std::vector<ncnn::Mat>& bottom_blobs, std::vector<ncnn::Mat>& top_blobs, const ncnn::Option& opt) const
     {
         const ncnn::Mat& bottom_blob = bottom_blobs[0];
-        const ncnn::Mat& bias_data = bottom_blobs[1];
         // miemie2013: bottom_blob.dims may be 3 (because it's from StyleGANv2ADA_SynthesisNetwork's const.)
         // miemie2013: bias_data.dims must be 1 (because it's from Shell Layer.)
 //        print_shape(bottom_blob, "bottom_blob");
 //        print_shape(bias_data, "bias_data");
 
-        int b_w = bias_data.w;
-        int b_h = bias_data.h;
-        int b_d = bias_data.d;
-        int b_channels = bias_data.c;
-
-        int w = bottom_blob.w;
-        int h = bottom_blob.h;
-        int d = bottom_blob.d;
-        int channels = bottom_blob.c;
-        int size = w * h * d;
-
-        int _111W_array_add_111W_bias = 0;
-        int _C1HW_array_add_111W_bias = 0;
-        if (channels == 1 && d == 1 && h == 1 && w != 1) {
-            if (b_channels == 1 && b_d == 1 && b_h == 1 && b_w != 1) {
-                _111W_array_add_111W_bias = 1;
-            }
-        }else if (channels != 1 && d == 1 && h != 1 && w != 1) {
-            if (b_channels == 1 && b_d == 1 && b_h == 1 && b_w != 1) {
-                _C1HW_array_add_111W_bias = 1;
-            }
-        }else {
-            printf("not implemented.\n");
-            return -100;
-        }
-
-        size_t elemsize = bottom_blobs[0].elemsize;
-        ncnn::Mat& top_blob = top_blobs[0];
-        top_blob.create(w, h, d, channels, elemsize, opt.blob_allocator);
-        if (top_blob.empty())
-            return -100;
-
-        float elu_alpha = 0.1f;
-        float selu_alpha = 1.67326324f;
-        float selu_lambda = 1.050700987f;
-        float alphaxlambda = selu_alpha * selu_lambda;
-
-
-        if (_111W_array_add_111W_bias)
+        if (bias_term)
         {
-            const float* bias_ptr = bias_data.channel(0);
-            const float* in_ptr = bottom_blob.channel(0);
-            float* out_ptr = top_blob.channel(0);
-            #pragma omp parallel for num_threads(opt.num_threads)
-            for (int i = 0; i < size; i++)
+            const ncnn::Mat& bias_data = bottom_blobs[1];
+            int b_w = bias_data.w;
+            int b_h = bias_data.h;
+            int b_d = bias_data.d;
+            int b_channels = bias_data.c;
+
+            int w = bottom_blob.w;
+            int h = bottom_blob.h;
+            int d = bottom_blob.d;
+            int channels = bottom_blob.c;
+            int size = w * h * d;
+
+            int _111W_array_add_111W_bias = 0;
+            int _C1HW_array_add_111W_bias = 0;
+            if (channels == 1 && d == 1 && h == 1 && w != 1) {
+                if (b_channels == 1 && b_d == 1 && b_h == 1 && b_w != 1) {
+                    _111W_array_add_111W_bias = 1;
+                }
+            }else if (channels != 1 && d == 1 && h != 1 && w != 1) {
+                if (b_channels == 1 && b_d == 1 && b_h == 1 && b_w != 1) {
+                    _C1HW_array_add_111W_bias = 1;
+                }
+            }else {
+                printf("not implemented.\n");
+                return -100;
+            }
+
+            size_t elemsize = bottom_blobs[0].elemsize;
+            ncnn::Mat& top_blob = top_blobs[0];
+            top_blob.create(w, h, d, channels, elemsize, opt.blob_allocator);
+            if (top_blob.empty())
+                return -100;
+
+            float elu_alpha = 0.1f;
+            float selu_alpha = 1.67326324f;
+            float selu_lambda = 1.050700987f;
+            float alphaxlambda = selu_alpha * selu_lambda;
+
+
+            if (_111W_array_add_111W_bias)
             {
-                float bias = bias_data[i];
-                float x = in_ptr[i];
-                x = bias_act(x, bias, elu_alpha, selu_alpha, selu_lambda, alphaxlambda);
-                out_ptr[i] = x;
+                const float* bias_ptr = bias_data.channel(0);
+                const float* in_ptr = bottom_blob.channel(0);
+                float* out_ptr = top_blob.channel(0);
+                #pragma omp parallel for num_threads(opt.num_threads)
+                for (int i = 0; i < size; i++)
+                {
+                    float bias = bias_data[i];
+                    float x = in_ptr[i];
+                    x = bias_act(x, bias, elu_alpha, selu_alpha, selu_lambda, alphaxlambda);
+                    out_ptr[i] = x;
+                }
+                // miemie2013: you must set top_blobs[0].dims as bottom_blob.dims;
+                top_blobs[0].dims = 1;
+                return 0;
+            }else if (_C1HW_array_add_111W_bias)
+            {
+                const float* bias_ptr = bias_data.channel(0);
+                #pragma omp parallel for num_threads(opt.num_threads)
+                for (int q = 0; q < channels; q++)
+                {
+                    const float* in_ptr = bottom_blob.channel(q);
+                    float* out_ptr = top_blob.channel(q);
+                    float bias = bias_ptr[q];
+
+                    for (int i = 0; i < size; i++)
+                    {
+                        float x = in_ptr[i];
+                        x = bias_act(x, bias, elu_alpha, selu_alpha, selu_lambda, alphaxlambda);
+                        out_ptr[i] = x;
+                    }
+                }
+                // miemie2013: you must set top_blobs[0].dims as bottom_blob.dims;
+                top_blobs[0].dims = bottom_blob.dims;
+                return 0;
+            }else {
+                printf("not implemented.\n");
+                return -100;
             }
-            // miemie2013: you must set top_blobs[0].dims as bottom_blob.dims;
-            top_blobs[0].dims = 1;
-            return 0;
-        }else if (_C1HW_array_add_111W_bias)
+        }else
         {
-            const float* bias_ptr = bias_data.channel(0);
+            int w = bottom_blob.w;
+            int h = bottom_blob.h;
+            int d = bottom_blob.d;
+            int channels = bottom_blob.c;
+            int size = w * h * d;
+
+            size_t elemsize = bottom_blobs[0].elemsize;
+            ncnn::Mat& top_blob = top_blobs[0];
+            top_blob.create(w, h, d, channels, elemsize, opt.blob_allocator);
+            if (top_blob.empty())
+                return -100;
+
+            float elu_alpha = 0.1f;
+            float selu_alpha = 1.67326324f;
+            float selu_lambda = 1.050700987f;
+            float alphaxlambda = selu_alpha * selu_lambda;
+
             #pragma omp parallel for num_threads(opt.num_threads)
             for (int q = 0; q < channels; q++)
             {
                 const float* in_ptr = bottom_blob.channel(q);
                 float* out_ptr = top_blob.channel(q);
-                float bias = bias_ptr[q];
 
                 for (int i = 0; i < size; i++)
                 {
                     float x = in_ptr[i];
-                    x = bias_act(x, bias, elu_alpha, selu_alpha, selu_lambda, alphaxlambda);
+                    x = bias_act(x, 0.f, elu_alpha, selu_alpha, selu_lambda, alphaxlambda);
                     out_ptr[i] = x;
                 }
             }
             // miemie2013: you must set top_blobs[0].dims as bottom_blob.dims;
             top_blobs[0].dims = bottom_blob.dims;
             return 0;
-        }else {
-            printf("not implemented.\n");
-            return -100;
         }
         return 0;
     }
@@ -695,6 +869,7 @@ public:
     float alpha;
     float gain;
     float clamp;
+    int bias_term;
 };
 
 DEFINE_LAYER_CREATOR(BiasAct)
@@ -779,6 +954,12 @@ public:
                         }else if(op_id==1)
                         {
                             out_ptr[i] = in_ptr[i] / bias;
+                        }else if(op_id==2)
+                        {
+                            out_ptr[i] = in_ptr[i] + bias;
+                        }else if(op_id==3)
+                        {
+                            out_ptr[i] = in_ptr[i] - bias;
                         }
                     }
                 }
@@ -801,6 +982,40 @@ public:
                         }else if(op_id==1)
                         {
                             out_ptr[i] = in_ptr[i] / bias;
+                        }else if(op_id==2)
+                        {
+                            out_ptr[i] = in_ptr[i] + bias;
+                        }else if(op_id==3)
+                        {
+                            out_ptr[i] = in_ptr[i] - bias;
+                        }
+                    }
+                }
+                return 0;
+            }else if (dim == 3)
+            {
+                const float* bias_ptr = bias_data.channel(0);
+                #pragma omp parallel for num_threads(opt.num_threads)
+                for (int q = 0; q < channels; q++)
+                {
+                    const float* in_ptr = bottom_blob.channel(q);
+                    float* out_ptr = top_blob.channel(q);
+
+                    for (int i = 0; i < size; i++)
+                    {
+                        float bias = bias_ptr[i % w];
+                        if (op_id==0)
+                        {
+                            out_ptr[i] = in_ptr[i] * bias;
+                        }else if(op_id==1)
+                        {
+                            out_ptr[i] = in_ptr[i] / bias;
+                        }else if(op_id==2)
+                        {
+                            out_ptr[i] = in_ptr[i] + bias;
+                        }else if(op_id==3)
+                        {
+                            out_ptr[i] = in_ptr[i] - bias;
                         }
                     }
                 }
@@ -829,6 +1044,12 @@ public:
                         }else if(op_id==1)
                         {
                             out_ptr[i] = in_ptr[i] / bias;
+                        }else if(op_id==2)
+                        {
+                            out_ptr[i] = in_ptr[i] + bias;
+                        }else if(op_id==3)
+                        {
+                            out_ptr[i] = in_ptr[i] - bias;
                         }
                     }
                 }
@@ -932,6 +1153,7 @@ public:
     virtual int load_param(const ncnn::ParamDict& pd)
     {
         scale = pd.get(0, 1.f);
+        bias = pd.get(1, 0.f);
         return 0;
     }
 
@@ -951,7 +1173,7 @@ public:
             for (int i = 0; i < size; i++)
             {
                 float x = ptr[i];
-                ptr[i] = static_cast<float>(scale * x);
+                ptr[i] = static_cast<float>(scale * x + bias);
             }
         }
 
@@ -959,6 +1181,7 @@ public:
     }
 public:
     float scale;
+    float bias;
 };
 
 DEFINE_LAYER_CREATOR(MulConstant)
@@ -1197,6 +1420,141 @@ public:
 DEFINE_LAYER_CREATOR(Up2)
 
 
+
+class Up4 : public ncnn::Layer
+{
+public:
+    Up4()
+    {
+        one_blob_only = true;
+    }
+
+    virtual int forward(const ncnn::Mat& bottom_blob, ncnn::Mat& top_blob, const ncnn::Option& opt) const
+    {
+        // miemie2013: bottom_blob.dims must be 3 (because it's from StyleGANv2ADA_SynthesisNetwork's const.)
+//        print_shape(bottom_blob, "Up4 bottom_blob");
+        int in_W = bottom_blob.w;
+        int in_H = bottom_blob.h;
+        int in_C = bottom_blob.c;
+
+        int out_W = in_W * 4;
+        int out_H = in_H * 4;
+        int out_C = in_C;
+
+        top_blob.create(out_W, out_H, out_C, 4u, 1, opt.blob_allocator);
+        if (top_blob.empty())
+            return -100;
+
+        // miemie2013:
+        #pragma omp parallel for num_threads(opt.num_threads)
+        for (int p = 0; p < out_C; p++)
+        {
+            const float* input_ptr = bottom_blob.channel(p);
+            float* output_ptr = top_blob.channel(p);
+
+            for (int i = 0; i < out_H; i++)
+            {
+                for (int j = 0; j < out_W; j++)
+                {
+                    if (i % 4 == 0)
+                    {
+                        if (j % 4 == 0)
+                        {
+                            output_ptr[i * out_W + j] = input_ptr[i / 4 * in_W + j / 4];
+                        }else if (j % 4 == 1)
+                        {
+                            output_ptr[i * out_W + j] = 0.f;
+                        }else if (j % 4 == 2)
+                        {
+                            output_ptr[i * out_W + j] = 0.f;
+                        }else if (j % 4 == 3)
+                        {
+                            output_ptr[i * out_W + j] = 0.f;
+                        }
+                    }else if (i % 4 == 1)
+                    {
+                        output_ptr[i * out_W + j] = 0.f;
+                    }else if (i % 4 == 2)
+                    {
+                        output_ptr[i * out_W + j] = 0.f;
+                    }else if (i % 4 == 3)
+                    {
+                        output_ptr[i * out_W + j] = 0.f;
+                    }
+                }
+            }
+        }
+
+        return 0;
+    }
+};
+
+DEFINE_LAYER_CREATOR(Up4)
+
+
+class Transforms : public ncnn::Layer
+{
+public:
+    Transforms()
+    {
+        one_blob_only = true;
+    }
+
+    virtual int forward(const ncnn::Mat& bottom_blob, ncnn::Mat& top_blob, const ncnn::Option& opt) const
+    {
+        int in_W = bottom_blob.w;
+        int in_H = bottom_blob.h;
+        int in_C = bottom_blob.c;
+
+        int out_W = 3;
+        int out_H = 2;
+
+        top_blob.create(out_W, out_H, 1, 1, 4u, 1, opt.blob_allocator);
+        if (top_blob.empty())
+            return -100;
+
+        const float* input_ptr = bottom_blob.channel(0);
+        float* output_ptr = top_blob.channel(0);
+        #pragma omp parallel for num_threads(opt.num_threads)
+        for (int i = 0; i < out_H; i++)
+        {
+            for (int j = 0; j < out_W; j++)
+            {
+                if (i == 0)
+                {
+                    if (j == 0)
+                    {
+                        output_ptr[i * out_W + j] = input_ptr[0];
+                    }else if (j == 1)
+                    {
+                        output_ptr[i * out_W + j] = 0.f - input_ptr[1];
+                    }else if (j == 2)
+                    {
+                        output_ptr[i * out_W + j] = input_ptr[1] * input_ptr[3] - input_ptr[0] * input_ptr[2];
+                    }
+                }else if (i == 1)
+                {
+                    if (j == 0)
+                    {
+                        output_ptr[i * out_W + j] = input_ptr[1];
+                    }else if (j == 1)
+                    {
+                        output_ptr[i * out_W + j] = input_ptr[0];
+                    }else if (j == 2)
+                    {
+                        output_ptr[i * out_W + j] = 0.f - input_ptr[0] * input_ptr[3] - input_ptr[1] * input_ptr[2];
+                    }
+                }
+            }
+        }
+        top_blob.dims = 2;
+        return 0;
+    }
+};
+
+DEFINE_LAYER_CREATOR(Transforms)
+
+
 class StyleganPost : public ncnn::Layer
 {
 public:
@@ -1268,6 +1626,9 @@ static int detect_PPYOLOE(const char* z_path, const char* param_path, const char
     model.register_custom_layer("Lerp", Lerp_layer_creator);
     model.register_custom_layer("Abs", Abs_layer_creator);
     model.register_custom_layer("Rsqrt", Rsqrt_layer_creator);
+    model.register_custom_layer("Sqrt", Sqrt_layer_creator);
+    model.register_custom_layer("Sin", Sin_layer_creator);
+    model.register_custom_layer("Clamp", Clamp_layer_creator);
     model.register_custom_layer("Shell", Shell_layer_creator);
     model.register_custom_layer("Fmatmul", Fmatmul_layer_creator);
     model.register_custom_layer("BiasAct", BiasAct_layer_creator);
@@ -1279,6 +1640,8 @@ static int detect_PPYOLOE(const char* z_path, const char* param_path, const char
     model.register_custom_layer("StyleganPost", StyleganPost_layer_creator);
     model.register_custom_layer("StyleMixingSwitcher", StyleMixingSwitcher_layer_creator);
     model.register_custom_layer("Up2", Up2_layer_creator);
+    model.register_custom_layer("Up4", Up4_layer_creator);
+    model.register_custom_layer("Transforms", Transforms_layer_creator);
 
     model.load_param(param_path);
     model.load_model(bin_path);

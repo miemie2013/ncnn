@@ -19,8 +19,8 @@ y = np.array(y).astype(np.float32)
 y = np.reshape(y, y2.shape)
 print(y2.shape)
 
-# y = y[0][259:261, 376:378]
-# y2 = y2[0][259:261, 376:378]
+# y = y[:, :, 44:46, 17:19]
+# y2 = y2[:, :, 44:46, 17:19]
 
 ddd = np.sum((y - y2) ** 2)
 print('sum  ddd=%.9f' % ddd)

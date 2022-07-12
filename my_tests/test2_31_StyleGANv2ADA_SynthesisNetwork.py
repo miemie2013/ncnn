@@ -31,13 +31,39 @@ from my_tests.mmgan_styleganv3 import FullyConnectedLayer, StyleGANv3_SynthesisN
 # synthesis_ema = StyleGANv2ADA_SynthesisNetwork(**synthesis)
 
 
+# w_dim = 512
+# z_dim = 512
+# c_dim = 0
+# img_resolution = 512
+# img_channels = 3
+# channel_base = 32768
+# channel_max = 512
+# synthesis = dict(
+#     w_dim=w_dim,
+#     img_resolution=img_resolution,
+#     img_channels=img_channels,
+#     channel_base=channel_base,
+#     channel_max=channel_max,
+#     magnitude_ema_beta=0.999,
+# )
+# stylegan_cfg = 'stylegan3-r'
+# if stylegan_cfg == 'stylegan3-r':
+#     synthesis['conv_kernel'] = 1
+#     synthesis['channel_base'] *= 2
+#     synthesis['channel_max'] *= 2
+#     synthesis['use_radial_filters'] = True
+# synthesis_ema = StyleGANv3_SynthesisNetwork(**synthesis)
+
+
+
+
 w_dim = 512
 z_dim = 512
 c_dim = 0
-img_resolution = 512
+img_resolution = 256
 img_channels = 3
-channel_base = 32768
-channel_max = 512
+channel_base = 8192
+channel_max = 256
 synthesis = dict(
     w_dim=w_dim,
     img_resolution=img_resolution,
@@ -46,7 +72,7 @@ synthesis = dict(
     channel_max=channel_max,
     magnitude_ema_beta=0.999,
 )
-stylegan_cfg = 'stylegan3-r'
+stylegan_cfg = 'stylegan3-t'
 if stylegan_cfg == 'stylegan3-r':
     synthesis['conv_kernel'] = 1
     synthesis['channel_base'] *= 2
@@ -60,7 +86,8 @@ synthesis_ema.eval()
 
 # ckpt = torch.load('styleganv2ada_512_afhqcat.pth', map_location="cpu")
 # ckpt = torch.load('65.pth', map_location="cpu")
-ckpt = torch.load('stylegan3_r_afhqv2_512.pth', map_location="cpu")
+# ckpt = torch.load('stylegan3_r_afhqv2_512.pth', map_location="cpu")
+ckpt = torch.load('77.pth', map_location="cpu")
 synthesis_ema = load_ckpt(synthesis_ema, ckpt["synthesis_ema"])
 
 torch.save(synthesis_ema.state_dict(), "31.pth")
