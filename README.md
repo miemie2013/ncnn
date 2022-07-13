@@ -4,6 +4,16 @@
 ## 概述
 ncnn实现stylegan2ada和stylegan3！
 
+开源摘星计划（WeOpen Star） 是由腾源会 2022 年推出的全新项目，旨在为开源人提供成长激励，为开源项目提供成长支持，助力开发者更好地了解开源，更快地跨越鸿沟，参与到开源的具体贡献与实践中。
+
+不管你是开源萌新，还是希望更深度参与开源贡献的老兵，跟随“开源摘星计划”开启你的开源之旅，从一篇学习笔记、到一段代码的提交，不断挖掘自己的潜能，最终成长为开源社区的“闪亮之星”。
+
+我们将同你一起，探索更多的可能性！
+
+开源摘星计划: https://github.com/weopenprojects/WeOpen-Star/blob/main/README.md
+
+ncnn贡献指南: https://github.com/weopenprojects/WeOpen-Star/issues/27
+
 
 ## 快速开始
 
